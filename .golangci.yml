@@ -1,0 +1,59 @@
+version: "2"
+
+linters:
+  enable:
+    - bodyclose
+    - copyloopvar
+    - errcheck
+    - errorlint
+    - gocritic
+    - gosec
+    - govet
+    - ineffassign
+    - misspell
+    - nilerr
+    - noctx
+    - revive
+    - staticcheck
+    - unconvert
+    - unused
+
+  settings:
+    gosec:
+      excludes:
+        # G107: shutdowncheck's entire purpose is requesting a user-supplied URL.
+        - G107
+    revive:
+      rules:
+        - name: package-comments
+        - name: exported
+        - name: error-strings
+        - name: context-as-argument
+
+  exclusions:
+    rules:
+      # Test code may ignore errors and use weaker primitives.
+      - path: _test\.go
+        linters:
+          - errcheck
+          - gosec
+          - noctx
+      # Conformance fixtures are deliberately broken servers; they document
+      # anti-patterns and must not be linted into correctness.
+      - path: ^test/conformance/
+        linters:
+          - bodyclose
+          - errcheck
+          - gocritic
+          - gosec
+          - revive
+          - staticcheck
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/shutdowncheck/shutdowncheck

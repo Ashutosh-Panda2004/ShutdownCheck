@@ -1,0 +1,28 @@
+# Build artefacts
+/bin/
+/dist/
+*.exe
+*.test
+
+# Coverage & profiling
+coverage.out
+coverage.html
+*.prof
+
+# Fuzzing corpora produced locally (seed corpora are committed under testdata/)
+**/testdata/fuzz/
+
+# Reports produced by local runs
+*.ndjson
+shutdowncheck-report.json
+results.xml
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Tooling caches
+.tokenlens/

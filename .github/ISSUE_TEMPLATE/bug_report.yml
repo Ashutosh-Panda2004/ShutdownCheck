@@ -1,0 +1,57 @@
+name: Bug report
+description: Something in the tool itself crashed, hung, or behaved incorrectly
+title: "[bug] "
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        If the tool ran fine but reported the *wrong verdict*, please use the
+        **Misdiagnosis report** template instead — it asks for the timeline data
+        we need.
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect to happen?
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Include the exact command and, if possible, a minimal server that triggers it.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: output
+    attributes:
+      label: Output
+      description: Run with --verbose if the failure is not obvious.
+      render: shell
+
+  - type: input
+    id: version
+    attributes:
+      label: shutdowncheck version
+      placeholder: output of `shutdowncheck version`
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: OS and architecture
+      placeholder: Ubuntu 24.04 amd64
+    validations:
+      required: true

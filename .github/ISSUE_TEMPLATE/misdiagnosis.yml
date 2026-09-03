@@ -1,0 +1,78 @@
+name: Misdiagnosis report
+description: ShutdownCheck reported the wrong verdict or the wrong failure signature
+title: "[misdiagnosis] SCxxx: "
+labels: ["misdiagnosis", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you — these are the most valuable reports we get.
+
+        A verdict that is wrong is worse than no verdict at all, so every
+        confirmed misdiagnosis becomes a permanent regression test.
+
+        **The single most useful thing you can attach is the raw timeline:**
+
+        ```
+        shutdowncheck run ... --format ndjson --output run.ndjson
+        ```
+
+        The NDJSON contains no request bodies and has sensitive headers
+        redacted, but please skim it before attaching.
+
+  - type: input
+    id: signature
+    attributes:
+      label: Signature involved
+      description: Which signature was wrongly reported, or wrongly omitted?
+      placeholder: SC006
+    validations:
+      required: true
+
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Kind of misdiagnosis
+      options:
+        - False positive — reported a failure that is not real
+        - False negative — missed a failure that is real
+        - Wrong signature — a real failure, but named incorrectly
+        - Wrong remediation — correct signature, unhelpful or wrong fix advice
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect, and why?
+      description: Describe the shutdown behaviour your service actually implements.
+    validations:
+      required: true
+
+  - type: textarea
+    id: command
+    attributes:
+      label: Exact command
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: ndjson
+    attributes:
+      label: Timeline (run.ndjson)
+      description: Attach the file, or paste it here if small.
+
+  - type: input
+    id: stack
+    attributes:
+      label: Service stack
+      placeholder: ASP.NET Core 9 / Kestrel, behind nginx ingress
+
+  - type: input
+    id: version
+    attributes:
+      label: shutdowncheck version
+      placeholder: output of `shutdowncheck version`
+    validations:
+      required: true

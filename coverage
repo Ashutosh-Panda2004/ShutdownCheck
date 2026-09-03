@@ -1,0 +1,5 @@
+mode: atomic
+github.com/shutdowncheck/shutdowncheck/cmd/shutdowncheck/main.go:24.2,24.22 1 0
+github.com/shutdowncheck/shutdowncheck/cmd/shutdowncheck/main.go:25.3,25.21 1 0
+github.com/shutdowncheck/shutdowncheck/cmd/shutdowncheck/main.go:27.4,28.10 2 0
+github.com/shutdowncheck/shutdowncheck/cmd/shutdowncheck/main.go:32.2,34.20 3 0

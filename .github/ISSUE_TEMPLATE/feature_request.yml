@@ -1,0 +1,43 @@
+name: Feature request
+description: Suggest a capability for ShutdownCheck
+title: "[feature] "
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before opening: please skim the **Non-Goals** section of
+        `shutdowncheck-spec.md`. The tool is deliberately narrow — it verifies
+        termination behaviour and nothing else. Proposals for chaos injection,
+        general load testing, APM features or AI analysis will be closed as
+        out of scope, and that is not a judgement on the idea.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+      description: Describe the situation you are in, not the solution you have in mind.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behaviour
+    validations:
+      required: true
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Does this fit the existing scope?
+      options:
+        - "Yes — it makes termination verification more accurate or more usable"
+        - "It extends into a new area; I think that is justified because..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you considered

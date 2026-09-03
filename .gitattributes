@@ -1,0 +1,24 @@
+# Normalise line endings. Without this, a Windows checkout reintroduces CRLF and
+# the gofmt check in CI fails on Linux for files that are locally fine.
+* text=auto eol=lf
+
+*.go      text eol=lf
+*.md      text eol=lf
+*.yml     text eol=lf
+*.yaml    text eol=lf
+*.json    text eol=lf
+*.sh      text eol=lf
+Makefile  text eol=lf
+
+# PowerShell is the one place CRLF is the native convention.
+*.ps1     text eol=crlf
+
+# Never touch binaries.
+*.png     binary
+*.gif     binary
+*.svg     text eol=lf
+*.zip     binary
+
+# Keep generated/vendored noise out of language statistics and diffs.
+test/conformance/** linguist-vendored
+docs/**             linguist-documentation
