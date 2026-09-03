@@ -905,7 +905,7 @@ A tool whose entire value proposition is "trust my verdict" has an unusually hig
 
 **L2 — In-process HTTP server tests.** Go `httptest`-based servers that exhibit each pathological behaviour (hang, RST, instant close, no readiness flip) to test the prober and connection forensics without spawning processes. Fast, hermetic, race-detector enabled.
 
-**L3 — Conformance suite (end-to-end, cross-language).** `test/conformance/` contains servers in **Go, Node.js, Python, Java, C#**, each with variants: `correct`, `ignores-signal`, `instant-close`, `no-readiness-flip`, `abrupt-reset`, `slow-drain`, `early-exit`, `orphan-child`. The E2E harness runs ShutdownCheck against every variant and asserts the exact expected signature set. This is the strongest possible evidence that the tool works black-box across stacks, and it doubles as documentation and demo material.
+**L3 — Conformance suite (end-to-end, cross-language).** `test/conformance/` holds one server per stack — **Go, Node.js and Python** as of Phase 6, with Java and C# deferred until they can be verified rather than written blind — each exposing the same modes: `correct`, `ignore-signal`, `instant-close`, `no-readiness-flip`, `abrupt-reset`, `slow-drain`, `early-exit`, `listener-never-closes`, `slow-readiness`, `readiness-flap`, `nonzero-exit`, `accept-no-response`, `orphan-child`. The harness runs ShutdownCheck against every mode and asserts the exact expected signature set, and a build-failing guard requires each asserted signature to be exercised in at least two independent stacks unless there is a documented reason it cannot be. This is the strongest possible evidence that the tool works black-box across stacks, and it doubles as documentation and demo material.
 
 **L4 — Robustness.** `go test -race` on everything; fuzzing on config and report parsers; a soak test running 200 consecutive runs asserting zero leaked processes, sockets or goroutines; a flakiness test that runs the same fixture 50 times and requires an identical verdict every time. **Determinism is a tested property, not an aspiration.**
 
@@ -986,9 +986,11 @@ Distribution is a first-class feature, not an afterthought — the tool's whole 
 3. **Readiness auto-discovery.** ✅ *Resolved in Phase 3.* The tool does **not** guess at `/readyz`, `/healthz` or similar. Probing only happens against an explicitly configured endpoint, and `SC007` never fires when readiness was not probed. Guessing would mean an unconfigured probe could be mistaken for evidence, and absence of data must never be read as data.
 4. **NDJSON re-analysis subcommand.** ✅ *Resolved in Phase 5 — built.* `shutdowncheck analyze run.ndjson --profile kubernetes` re-judges a recorded run without repeating it. It was cheap because analysis is pure, and it is what makes the separation of measurement from interpretation concrete: the same recording passes under `standalone` and fails under `kubernetes`, which is asserted by `TestAnalyzeReJudgesRecordedEvidence`. It also gives maintainers a way to reproduce a misdiagnosis report exactly, from the NDJSON the reporter attached.
 
+5. **Bundled conformance servers.** ✅ *Resolved in Phase 6 — see [ADR-0013](docs/adr/0013-demo-subcommand.md).* Nothing is embedded. `shutdowncheck demo` re-executes the binary through a hidden `__demo-server` subcommand and runs the ordinary `run` pipeline against it, so the demo is a real process receiving a real signal, measured by the production code path. Where signals do not exist — Windows, per [ADR-0008](docs/adr/0008-no-windows-process-targets.md) — it analyses a recorded run shipped alongside the binary and says clearly that it is a recording. A demo that fabricated its evidence would undermine the one property this tool exists to provide. *(Built in Phase 8, with the distribution work.)*
+
 ### Still open
 
-5. **Bundled conformance servers.** Should `shutdowncheck demo` embed a tiny broken/fixed Go server so a first-time user can see a failing run with zero setup? Strong for onboarding; small binary-size cost. *(Decide in Phase 6.)*
+Nothing. Every question raised in v0.1 and v0.2 has been decided, and each decision is recorded as an ADR rather than left as prose here.
 
 ---
 

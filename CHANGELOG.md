@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Cross-language conformance suite (`test/conformance/`): the same thirteen
+  shutdown defects implemented in Go, Node.js and Python, each asserted to
+  produce the same verdict and the same signatures. This is where "works
+  regardless of your stack" stops being a claim. `correct` is the most
+  important case in the suite — anything can report failures, but only a tool
+  that clears a genuinely correct service is worth putting in CI.
+- A build-failing guard requiring every asserted signature to be exercised in at
+  least two independent stacks, with a single documented exemption for SC012,
+  which is a defect of process topology rather than of any framework. The
+  exemption is itself tested and fails once it is no longer needed.
 - A working command line: `run`, `analyze`, `explain`, `validate` and `version`,
   with the exit-code taxonomy from the specification so a pipeline can tell a
   detected defect from a misconfigured invocation.
@@ -75,11 +85,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Governance: Apache-2.0 licence, contributing guide, code of conduct, security
   policy, issue templates (including a misdiagnosis template that collects the
   raw timeline) and a pull request template.
-- Architecture decision records ADR-0001 through ADR-0012 capturing the locked
+- Architecture decision records ADR-0001 through ADR-0013 capturing the locked
   decisions from the specification.
+
+### Changed
+
+- The end-to-end tests now build the shared conformance server instead of
+  keeping a near-identical fixture of their own, and cover the command-line
+  surface — formats, file permissions, exit codes, trial aggregation — while
+  leaving verdict correctness to the conformance suite.
+- `go test -short` skips the suites that spawn and kill real processes, so a
+  broken unit test is no longer hidden behind a minute of process wrangling.
+  CI runs the full suites in a dedicated job.
 
 ### Fixed
 
+- The orphaned-listener fixture re-bound the port instead of inheriting the
+  listening socket, so it would have failed with "address already in use" and
+  reproduced nothing. The child now receives the socket as a file descriptor,
+  which is how the defect actually occurs.
+- A missing language runtime silently skipped part of the conformance matrix.
+  It is now a hard failure when `CI` is set: a shrinking matrix must not be able
+  to hide behind a green tick.
 - A config file containing an empty scenario stub crashed validation with a nil
   pointer dereference. Found by fuzzing; the crashing input is committed as a
   regression seed.
@@ -89,8 +116,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Process and managed-command targets require POSIX signals and are therefore
   unavailable on Windows, where they fail with an explicit error pointing at the
   Docker target. See `docs/adr/0008-windows-support-strategy.md`.
-- Stack-specific remediation text is not written yet; findings currently carry
-  their impact and documentation link. The content lands with the `explain`
-  command in Phase 5.
+- The conformance suite covers Go, Node.js and Python. Java and C# are deferred
+  until they can be verified on a machine with those toolchains rather than
+  written blind.
 
 [Unreleased]: https://github.com/shutdowncheck/shutdowncheck/commits/main

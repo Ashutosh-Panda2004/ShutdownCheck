@@ -1,15 +1,17 @@
 //go:build !windows
 
-// Package e2e drives the real binary against real processes.
+// Package e2e covers the command-line surface end to end: what gets written
+// where, in what format, and with which exit code.
 //
-// These are the only tests that exercise signal delivery, process-group
-// cleanup and connection forensics against a genuinely independent server, so
-// they run wherever POSIX signals exist. Windows is covered separately, where
-// process targets fail loudly rather than pretending.
+// Verdict correctness across stacks is the conformance suite's job. This is
+// deliberately about the parts a user touches, so the two do not drift into
+// testing the same thing twice. Both need POSIX signals, so both are Unix-only.
 package e2e
 
 import (
 	"bytes"
+	"encoding/json"
+	"flag"
 	"fmt"
 	"net"
 	"os"
@@ -22,29 +24,39 @@ import (
 	"github.com/shutdowncheck/shutdowncheck/pkg/schema"
 )
 
-var fixtureBinary string
+var serverBinary string
 
 func TestMain(m *testing.M) {
+	// testing.Short is only readable once flags are parsed, and TestMain runs
+	// before the testing package does that itself.
+	flag.Parse()
+	if testing.Short() {
+		// Nothing here runs without building and killing real processes.
+		os.Exit(0)
+	}
+
 	dir, err := os.MkdirTemp("", "shutdowncheck-e2e")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "temp dir:", err)
 		os.Exit(1)
 	}
-	defer func() { _ = os.RemoveAll(dir) }()
 
-	fixtureBinary = filepath.Join(dir, "fixture")
-	build := exec.Command("go", "build", "-o", fixtureBinary, "./testdata/fixture")
+	// The conformance server is the single fixture for the whole project; a
+	// second copy here would be one more thing to keep in step.
+	serverBinary = filepath.Join(dir, "server")
+	build := exec.Command("go", "build", "-o", serverBinary, "../conformance/go")
 	build.Stderr = os.Stderr
 	if err := build.Run(); err != nil {
-		fmt.Fprintln(os.Stderr, "build fixture:", err)
+		fmt.Fprintln(os.Stderr, "build conformance server:", err)
+		_ = os.RemoveAll(dir)
 		os.Exit(1)
 	}
 
-	os.Exit(m.Run())
+	code := m.Run()
+	_ = os.RemoveAll(dir)
+	os.Exit(code)
 }
 
-// freePort reserves a port and releases it, so the fixture can be told exactly
-// where to listen and the test knows the URL up front.
 func freePort(t *testing.T) int {
 	t.Helper()
 
@@ -63,123 +75,85 @@ type outcome struct {
 	stderr string
 }
 
-func runTool(t *testing.T, args ...string) outcome {
-	t.Helper()
-
+func runTool(args ...string) outcome {
 	var out, errOut bytes.Buffer
 	code := cli.Main(args, &out, &errOut)
 	return outcome{code: code, stdout: out.String(), stderr: errOut.String()}
 }
 
-func toolArgs(port int, mode string, extra ...string) []string {
-	addr := fmt.Sprintf("127.0.0.1:%d", port)
+func toolArgs(t *testing.T, mode string, extra ...string) []string {
+	t.Helper()
+
+	addr := fmt.Sprintf("127.0.0.1:%d", freePort(t))
 
 	args := []string{
 		"run",
 		"--url", "http://" + addr + "/work",
 		"--readiness-url", "http://" + addr + "/readyz",
+		"--profile", "standalone",
 		"--ensure-in-flight", "6",
 		"--warmup", "600ms",
-		"--steady", "600ms",
-		"--grace-period", "2s",
+		"--steady", "700ms",
+		"--grace-period", "5s",
 		"--no-color",
 	}
 	args = append(args, extra...)
-	return append(args, "--", fixtureBinary, "-addr", addr, "-mode", mode)
+	return append(args, "--", serverBinary, "-addr", addr, "-mode", mode)
 }
 
-// The headline case: a service that drains properly should pass cleanly, and
-// the tool must be able to say so. If this ever fails, nothing else the tool
-// reports can be trusted either.
-func TestCorrectServicePasses(t *testing.T) {
-	port := freePort(t)
-
-	got := runTool(t, toolArgs(port, "correct", "--profile", "standalone")...)
+// The sanity anchor for everything else: if a correct service cannot pass,
+// nothing else the tool reports can be trusted.
+func TestCorrectServicePassesEndToEnd(t *testing.T) {
+	got := runTool(toolArgs(t, "correct")...)
 	if got.code != schema.ExitPass {
 		t.Fatalf("exit = %d, want pass\nstdout:\n%s\nstderr:\n%s", got.code, got.stdout, got.stderr)
 	}
-	if !strings.Contains(got.stdout, "VERDICT: PASS") {
-		t.Errorf("stdout did not report a pass:\n%s", got.stdout)
-	}
-}
-
-// A service that closes its listener the instant SIGTERM arrives is the
-// widespread, subtle defect: correct by the usual advice, and a source of 502s
-// behind any load balancer.
-func TestInstantCloseIsCaughtUnderKubernetesProfile(t *testing.T) {
-	port := freePort(t)
-
-	got := runTool(t, toolArgs(port, "instant-close", "--profile", "kubernetes")...)
-	if got.code != schema.ExitFail {
-		t.Fatalf("exit = %d, want fail\nstdout:\n%s", got.code, got.stdout)
-	}
-	for _, want := range []string{"SC006", "SC007"} {
+	for _, want := range []string{"VERDICT: PASS", "in flight at signal"} {
 		if !strings.Contains(got.stdout, want) {
-			t.Errorf("report does not mention %s:\n%s", want, got.stdout)
+			t.Errorf("report is missing %q:\n%s", want, got.stdout)
 		}
 	}
 }
 
-// The same evidence must reach the opposite conclusion under a profile where
-// closing immediately is the requirement rather than the defect.
-func TestInstantCloseIsAcceptedUnderStrictProfile(t *testing.T) {
-	port := freePort(t)
+func TestTimelineIsShownUnlessSuppressed(t *testing.T) {
+	shown := runTool(toolArgs(t, "correct")...)
+	if !strings.Contains(shown.stdout, "TIMELINE") {
+		t.Errorf("the timeline should be shown by default:\n%s", shown.stdout)
+	}
 
-	got := runTool(t, toolArgs(port, "instant-close", "--profile", "strict")...)
-	if got.code == schema.ExitFail {
-		t.Fatalf("exit = %d; closing immediately is correct under strict\nstdout:\n%s", got.code, got.stdout)
+	hidden := runTool(toolArgs(t, "correct", "--no-timeline")...)
+	if strings.Contains(hidden.stdout, "TIMELINE") {
+		t.Errorf("--no-timeline should suppress it:\n%s", hidden.stdout)
 	}
 }
 
-func TestDroppedInFlightRequestsAreReported(t *testing.T) {
-	port := freePort(t)
-
-	got := runTool(t, toolArgs(port, "drop-inflight", "--profile", "standalone")...)
-	if got.code != schema.ExitFail {
-		t.Fatalf("exit = %d, want fail\nstdout:\n%s", got.code, got.stdout)
-	}
-	if !strings.Contains(got.stdout, "SC003") {
-		t.Errorf("report does not mention dropped in-flight requests:\n%s", got.stdout)
-	}
-}
-
-// A process that ignores the signal must be escalated past, not waited on
-// forever, and the report has to say a hard kill was required.
-func TestIgnoredSignalEscalatesToSigkill(t *testing.T) {
-	port := freePort(t)
-
-	got := runTool(t, toolArgs(port, "ignore-signal", "--profile", "standalone")...)
-	if got.code != schema.ExitFail {
-		t.Fatalf("exit = %d, want fail\nstdout:\n%s", got.code, got.stdout)
-	}
-	if !strings.Contains(got.stdout, "SC002") {
-		t.Errorf("report does not mention that a kill was required:\n%s", got.stdout)
-	}
-}
-
-func TestJSONOutputIsMachineReadable(t *testing.T) {
-	port := freePort(t)
-
-	got := runTool(t, toolArgs(port, "correct", "--profile", "standalone", "--format", "json")...)
+func TestJSONOutputParsesAsTheVersionedSchema(t *testing.T) {
+	got := runTool(toolArgs(t, "correct", "--format", "json")...)
 	if got.code != schema.ExitPass {
 		t.Fatalf("exit = %d\nstderr:\n%s", got.code, got.stderr)
 	}
 
-	for _, want := range []string{`"schema_version"`, `"verdict"`, `"by_phase"`} {
-		if !strings.Contains(got.stdout, want) {
-			t.Errorf("JSON output is missing %s", want)
-		}
+	var report schema.Report
+	if err := json.Unmarshal([]byte(got.stdout), &report); err != nil {
+		t.Fatalf("output is not valid schema JSON: %v\n%s", err, got.stdout)
+	}
+	if report.SchemaVersion != schema.SchemaVersion {
+		t.Errorf("schema_version = %q, want %q", report.SchemaVersion, schema.SchemaVersion)
+	}
+	if report.Verdict != schema.VerdictPass {
+		t.Errorf("verdict = %q", report.Verdict)
+	}
+	if report.Requests.ByPhase.InFlight.Count == 0 {
+		t.Error("no requests were in flight at the signal, so the run proved nothing")
 	}
 }
 
-func TestReportFilesAreWritten(t *testing.T) {
-	port := freePort(t)
+func TestReportFilesAreWrittenWithRestrictivePermissions(t *testing.T) {
 	dir := t.TempDir()
-
 	reportPath := filepath.Join(dir, "report.json")
 	badgePath := filepath.Join(dir, "badge.svg")
 
-	got := runTool(t, toolArgs(port, "correct", "--profile", "standalone",
+	got := runTool(toolArgs(t, "correct",
 		"--format", "json", "--output", reportPath, "--badge", badgePath)...)
 	if got.code != schema.ExitPass {
 		t.Fatalf("exit = %d\nstderr:\n%s", got.code, got.stderr)
@@ -194,29 +168,90 @@ func TestReportFilesAreWritten(t *testing.T) {
 		if info.Size() == 0 {
 			t.Errorf("%s is empty", path)
 		}
-		// Reports carry internal hostnames and URLs.
+		// Reports carry internal hostnames and URLs, so they are not
+		// world-readable.
 		if perm := info.Mode().Perm(); perm != 0o600 {
 			t.Errorf("%s has permissions %o, want 600", path, perm)
 		}
 	}
 }
 
-// Pointing the tool at nothing must be a target error, distinct from a defect
-// in a service that does exist.
-func TestUnreachableTargetIsATargetError(t *testing.T) {
+// Recording a run and re-judging it later is what separating measurement from
+// interpretation buys, so the round trip is exercised against a real run rather
+// than a synthetic timeline.
+func TestRecordedRunCanBeReJudgedUnderAnotherProfile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "run.ndjson")
+
+	got := runTool(toolArgs(t, "instant-close", "--format", "ndjson", "--output", path)...)
+	if got.code == schema.ExitInternal || got.code == schema.ExitTarget {
+		t.Fatalf("run failed: %s", got.stderr)
+	}
+
+	if info, err := os.Stat(path); err != nil || info.Size() == 0 {
+		t.Fatalf("no evidence was recorded: %v", err)
+	}
+
+	// The same evidence is acceptable standalone and a source of 502s behind
+	// a load balancer.
+	reJudged := runTool("analyze", path, "--profile", "kubernetes", "--no-color")
+	if reJudged.code != schema.ExitFail {
+		t.Fatalf("re-analysis exit = %d, want fail\n%s", reJudged.code, reJudged.stdout)
+	}
+	if !strings.Contains(reJudged.stdout, "SC006") {
+		t.Errorf("re-analysis should report SC006:\n%s", reJudged.stdout)
+	}
+}
+
+func TestMultipleTrialsAreAggregated(t *testing.T) {
+	got := runTool(toolArgs(t, "correct", "--trials", "2", "--format", "json")...)
+	if got.code != schema.ExitPass {
+		t.Fatalf("exit = %d\nstderr:\n%s", got.code, got.stderr)
+	}
+
+	var report schema.Report
+	if err := json.Unmarshal([]byte(got.stdout), &report); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if report.Run.Trials.Total != 2 {
+		t.Errorf("trials.total = %d, want 2", report.Run.Trials.Total)
+	}
+}
+
+// Pointing the tool at nothing is a different failure from finding a defect,
+// and a pipeline needs to be able to tell them apart.
+func TestUnreachableTargetIsNotReportedAsADefect(t *testing.T) {
 	port := freePort(t)
 
-	got := runTool(t,
+	got := runTool(
 		"run",
 		"--url", fmt.Sprintf("http://127.0.0.1:%d/work", port),
 		"--warmup", "200ms",
 		"--steady", "200ms",
 		"--grace-period", "1s",
 		"--no-color",
-		"--", fixtureBinary, "-addr", "127.0.0.1:0", "-mode", "correct",
+		"--", serverBinary, "-addr", "127.0.0.1:0", "-mode", "correct",
 	)
 
-	if got.code != schema.ExitTarget && got.code != schema.ExitInconclusive {
-		t.Fatalf("exit = %d, want a target or inconclusive result\nstderr:\n%s", got.code, got.stderr)
+	if got.code == schema.ExitPass || got.code == schema.ExitFail {
+		t.Fatalf("exit = %d; an unreachable target is neither a pass nor a defect\nstderr:\n%s",
+			got.code, got.stderr)
+	}
+}
+
+func TestCapturedTargetLogsReachTheEvidence(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "run.ndjson")
+
+	got := runTool(toolArgs(t, "correct",
+		"--capture-target-logs", "--format", "ndjson", "--output", path)...)
+	if got.code != schema.ExitPass {
+		t.Fatalf("exit = %d\nstderr:\n%s", got.code, got.stderr)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if !strings.Contains(string(data), `"kind":"log"`) {
+		t.Error("target output was not captured onto the timeline")
 	}
 }

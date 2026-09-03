@@ -1,18 +1,32 @@
 # End-to-end tests
 
-Table-driven tests that run the real binary against real processes and
-containers, asserting `(target kind, language, variant) -> expected signatures
-and verdict`.
+These cover the command-line surface: what gets written where, in what format,
+and with which exit code.
 
-These are the slowest and most valuable tests in the project: they are the only
-ones that exercise signal delivery, process-group cleanup and connection
-forensics against genuinely independent servers.
+Verdict correctness across stacks is the [conformance suite](../conformance)'s
+job. Keeping the two apart stops both from half-testing the same thing and
+leaving a gap in the middle.
 
-Also home to the robustness suites required before v1.0:
+What is asserted here:
 
-- **Soak** — 200 consecutive runs asserting zero leaked processes, sockets or
-  goroutines.
-- **Determinism** — the same fixture analysed repeatedly must yield an identical
-  verdict every time. A flaky gate is a gate that gets deleted.
+- a correct service passes end to end — the anchor for everything else
+- `--format json` parses as the versioned public schema
+- reports and badges are written with `0600`, since they carry internal
+  hostnames and URLs
+- a recorded run can be re-judged later under a different profile, which is the
+  point of separating measurement from interpretation
+- `--trials` aggregates rather than reporting only the last run
+- an unreachable target exits distinctly from a real defect, so a pipeline can
+  tell "your service is broken" from "the tool never got started"
+- `--capture-target-logs` puts the target's own output on the timeline
 
-Started in Phase 3, expanded in Phase 6.
+The tests build the shared Go server from `../conformance/go` rather than
+keeping a fixture of their own; a second copy would be one more thing to keep in
+step.
+
+Killing processes needs real signals, so these are Unix-only, and they skip
+under `-short`.
+
+```sh
+go test ./test/e2e/
+```

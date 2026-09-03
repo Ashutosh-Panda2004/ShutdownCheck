@@ -35,15 +35,54 @@ jobs:
       - name: Build
         run: go build ./...
 
+      # The fast pass. Suites that spawn real servers and kill them are
+      # excluded here and covered by the conformance job, so a broken unit
+      # test is not hidden behind a minute of process wrangling.
       - name: Test
-        run: go test ./...
+        run: go test -short ./...
 
       # The race detector needs cgo and a C toolchain. That is reliable on Linux
       # and macOS runners; on Windows it depends on the runner image shipping
       # gcc, so we do not make the build depend on it there.
       - name: Test (race detector)
         if: matrix.os != 'windows-latest'
-        run: go test -race ./...
+        run: go test -short -race ./...
+
+  conformance:
+    name: conformance (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # The servers are driven with real signals, so there is nothing to run
+        # on Windows. The tool refuses process targets there rather than
+        # pretending, which is asserted in the unit tests instead.
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # A missing runtime must not quietly shrink the matrix: the suite would
+      # still go green while proving less than it claims.
+      - name: Confirm every runtime is present
+        run: |
+          node --version
+          python3 --version
+
+      - name: Conformance and end-to-end suites
+        run: go test -race -timeout 20m ./test/...
 
   coverage:
     name: coverage
@@ -55,8 +94,16 @@ jobs:
           go-version-file: go.mod
           check-latest: true
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - name: Test with coverage
-        run: go test -covermode=atomic -coverprofile=coverage.out ./...
+        run: go test -covermode=atomic -coverprofile=coverage.out -timeout 20m ./...
 
       - name: Report total coverage
         run: go tool cover -func=coverage.out | tail -n 1

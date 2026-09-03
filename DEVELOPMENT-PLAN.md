@@ -180,25 +180,29 @@ Phases 2 and 4 are independent of each other and can be reordered or interleaved
 
 ---
 
-## Phase 6 — Conformance Suite & End-to-End Proof
+## Phase 6 — Conformance Suite & End-to-End Proof ✅
 
 **Size:** L · **Goal:** Prove the "works regardless of tech stack" claim empirically rather than rhetorically.
 
 **Deliverables**
-- `test/conformance/{go,node,python,java,dotnet}/`, each with variants: `correct`, `ignores-signal`, `instant-close`, `no-readiness-flip`, `abrupt-reset`, `slow-drain`, `early-exit`, `orphan-child`.
-- Each server is intentionally minimal (target: under 100 lines) and heavily commented — they are public reference material for "correct termination in my language."
-- Table-driven E2E harness: `(language, variant) → expected signature set + expected verdict`.
-- CI strategy: Go + Node subset on every PR; full 5-language matrix nightly and on release tags.
-- README demo GIF: broken server FAILs, fixed server PASSes.
+- `test/conformance/{go,node,python}/`, one server per stack covering thirteen modes: `correct`, `ignore-signal`, `instant-close`, `no-readiness-flip`, `abrupt-reset`, `slow-drain`, `early-exit`, `listener-never-closes`, `slow-readiness`, `readiness-flap`, `nonzero-exit`, `accept-no-response`, `orphan-child`.
+- One file per language rather than one per variant. The variants differ by a few lines each, so splitting them would have buried the interesting part in boilerplate and let the implementations drift apart.
+- Table-driven harness: `(language, mode, profile) → expected signature set + expected verdict`, with the contract in an untagged file so it is checked on every platform including Windows.
+- CI: fast `-short` unit pass on all three operating systems, plus a dedicated conformance job on Linux and macOS with Node and Python installed.
+- README demo GIF — **deferred to Phase 8**, where the release tooling and `demo` command live.
 
-**Exit criteria**
-- Every signature is triggered by fixtures in **at least two different languages**.
-- **Zero false PASS**: no broken variant yields `PASS` under any supported profile.
+**Exit criteria** — all met
+- Every signature is triggered by fixtures in **at least two different languages**, enforced by `TestSignatureCoverageAcrossLanguages`. SC012 is the single exemption, documented and itself tested for continued necessity, because an orphaned listener is a defect of process topology rather than of any framework.
+- **Zero false PASS**: no broken mode yields `PASS` under any supported profile.
 - Every `correct` variant PASSes under its intended profile.
 
-**Decision to close here:** open question #4 — whether to embed a `shutdowncheck demo` fixture in the binary.
+**Deviations from plan**
+- Java and C# are deferred. Writing fixtures for toolchains that cannot be run and verified locally would have shipped code that only looks correct, which is the opposite of what this phase is for.
+- The Phase 5 end-to-end fixture was deleted and the e2e suite repointed at the shared conformance server, then narrowed to the command-line surface so the two suites stop half-testing the same thing.
 
-**Risk:** CI wall-time. Mitigated by the PR-subset / nightly-full split.
+**Decision closed here:** open question #5 — [ADR-0013](docs/adr/0013-demo-subcommand.md). Nothing is embedded; `demo` self-spawns through a hidden subcommand and falls back to a clearly labelled recording where signals do not exist.
+
+**Risk:** CI wall-time. Mitigated by the `-short` / full-job split rather than the originally planned nightly matrix, which is no longer needed at three languages.
 
 ---
 
