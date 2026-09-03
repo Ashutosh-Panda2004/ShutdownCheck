@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/shutdowncheck/shutdowncheck/internal/redact"
 	"github.com/shutdowncheck/shutdowncheck/internal/testutil"
 	"github.com/shutdowncheck/shutdowncheck/internal/timeline"
 )
@@ -374,8 +375,20 @@ func TestClassifyRedactsURLsInDetail(t *testing.T) {
 	if strings.Contains(detail, "supersecret") {
 		t.Fatalf("classification detail leaked a secret: %q", detail)
 	}
-	if !strings.Contains(detail, Redacted) {
+	if !strings.Contains(detail, redact.Placeholder) {
 		t.Errorf("detail should mark the redaction, got %q", detail)
+	}
+}
+
+func TestRemoteAddrHandlesNil(t *testing.T) {
+	if got := remoteAddr(nil); got != "" {
+		t.Errorf("remoteAddr(nil) = %q, want empty", got)
+	}
+}
+
+func TestTrackedFromRejectsUnknownConn(t *testing.T) {
+	if _, ok := trackedFrom(nil); ok {
+		t.Error("trackedFrom(nil) should not report success")
 	}
 }
 

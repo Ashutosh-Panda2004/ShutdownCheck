@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/shutdowncheck/shutdowncheck/internal/redact"
 	"github.com/shutdowncheck/shutdowncheck/internal/timeline"
 )
 
@@ -148,7 +149,7 @@ func AddrFromURL(rawURL string) (string, error) {
 		return "", err
 	}
 	if parsed.Host == "" {
-		return "", &url.Error{Op: "parse", URL: RedactURL(rawURL), Err: errNoHost}
+		return "", &url.Error{Op: "parse", URL: redact.URL(rawURL), Err: errNoHost}
 	}
 
 	if parsed.Port() != "" {

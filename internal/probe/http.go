@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/shutdowncheck/shutdowncheck/internal/redact"
 	"github.com/shutdowncheck/shutdowncheck/internal/timeline"
 )
 
@@ -131,7 +132,7 @@ func (h *HTTP) Do(ctx context.Context, req Request) Attempt {
 
 	httpReq, err := h.build(ctx, req, state)
 	if err != nil {
-		return Attempt{Outcome: timeline.OutcomeOther, Error: RedactMessage(err.Error())}
+		return Attempt{Outcome: timeline.OutcomeOther, Error: redact.Message(err.Error())}
 	}
 
 	resp, err := h.client.Do(httpReq)

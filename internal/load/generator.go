@@ -8,6 +8,7 @@ import (
 
 	"github.com/shutdowncheck/shutdowncheck/internal/clock"
 	"github.com/shutdowncheck/shutdowncheck/internal/probe"
+	"github.com/shutdowncheck/shutdowncheck/internal/redact"
 	"github.com/shutdowncheck/shutdowncheck/internal/timeline"
 )
 
@@ -165,7 +166,7 @@ func (g *Generator) one(
 		ID:         g.nextID.Add(1),
 		Definition: req.Name,
 		Method:     req.Method,
-		URL:        probe.RedactURL(req.URL),
+		URL:        redact.URL(req.URL),
 		Scheduled:  scheduled,
 		Sent:       sent,
 		Done:       done,

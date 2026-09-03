@@ -9,6 +9,7 @@ import (
 	"net"
 	"syscall"
 
+	"github.com/shutdowncheck/shutdowncheck/internal/redact"
 	"github.com/shutdowncheck/shutdowncheck/internal/timeline"
 )
 
@@ -34,7 +35,7 @@ func Classify(err error) (timeline.Outcome, string) {
 		return timeline.OutcomeOK, ""
 	}
 
-	detail := RedactMessage(err.Error())
+	detail := redact.Message(err.Error())
 
 	switch {
 	case errors.Is(err, context.Canceled):

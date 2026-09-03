@@ -1,4 +1,10 @@
-package probe
+// Package redact removes values that must never reach a report, a log line or
+// the NDJSON stream.
+//
+// It is its own package because probing, target log capture and reporting all
+// need it. Secret handling is exactly the kind of rule that decays when each
+// caller reimplements it, so there is one implementation and one set of tests.
+package redact
 
 import (
 	"net/http"
@@ -6,9 +12,8 @@ import (
 	"strings"
 )
 
-// Redacted replaces any value that must never reach a report, a log line or the
-// NDJSON stream.
-const Redacted = "REDACTED"
+// Placeholder replaces any redacted value.
+const Placeholder = "REDACTED"
 
 // sensitiveHeaders are removed from anything the tool records. ShutdownCheck is
 // meant to run in CI against services that need credentials, so redaction is a
@@ -46,8 +51,8 @@ func IsSensitiveHeader(name string) bool {
 	return sensitiveHeaders[strings.ToLower(strings.TrimSpace(name))]
 }
 
-// RedactHeaders returns a copy with sensitive values replaced.
-func RedactHeaders(h http.Header) http.Header {
+// Headers returns a copy with sensitive values replaced.
+func Headers(h http.Header) http.Header {
 	if h == nil {
 		return nil
 	}
@@ -55,7 +60,7 @@ func RedactHeaders(h http.Header) http.Header {
 	out := make(http.Header, len(h))
 	for name, values := range h {
 		if IsSensitiveHeader(name) {
-			out[name] = []string{Redacted}
+			out[name] = []string{Placeholder}
 			continue
 		}
 		out[name] = append([]string(nil), values...)
@@ -63,29 +68,29 @@ func RedactHeaders(h http.Header) http.Header {
 	return out
 }
 
-// RedactURL removes credentials and secret-looking query values from a URL.
+// URL removes credentials and secret-looking query values from a URL.
 //
 // An unparseable input is returned as a placeholder rather than passed through:
 // if it cannot be understood it cannot be verified safe.
-func RedactURL(raw string) string {
+func URL(raw string) string {
 	if raw == "" {
 		return ""
 	}
 
 	parsed, err := url.Parse(raw)
 	if err != nil {
-		return Redacted
+		return Placeholder
 	}
 
 	if parsed.User != nil {
-		parsed.User = url.User(Redacted)
+		parsed.User = url.User(Placeholder)
 	}
 
 	if query := parsed.Query(); len(query) > 0 {
 		changed := false
 		for key := range query {
 			if sensitiveQueryKeys[strings.ToLower(key)] {
-				query.Set(key, Redacted)
+				query.Set(key, Placeholder)
 				changed = true
 			}
 		}
@@ -97,11 +102,11 @@ func RedactURL(raw string) string {
 	return parsed.String()
 }
 
-// RedactMessage scrubs URLs embedded in an error string.
+// Message scrubs URLs embedded in an error string.
 //
 // Transport errors are formatted as `Get "http://host/path?token=x": ...`, so
 // the quoted URL is extracted and redacted in place.
-func RedactMessage(msg string) string {
+func Message(msg string) string {
 	if msg == "" {
 		return ""
 	}
@@ -124,7 +129,7 @@ func RedactMessage(msg string) string {
 		candidate := rest[start+1 : end]
 		b.WriteString(rest[:start+1])
 		if looksLikeURL(candidate) {
-			b.WriteString(RedactURL(candidate))
+			b.WriteString(URL(candidate))
 		} else {
 			b.WriteString(candidate)
 		}

@@ -1,4 +1,4 @@
-package probe
+package redact
 
 import (
 	"net/http"
@@ -24,7 +24,7 @@ func TestIsSensitiveHeader(t *testing.T) {
 	}
 }
 
-func TestRedactHeaders(t *testing.T) {
+func TestHeaders(t *testing.T) {
 	in := http.Header{
 		"Authorization": []string{"Bearer supersecret"},
 		"Cookie":        []string{"session=abc"},
@@ -32,13 +32,13 @@ func TestRedactHeaders(t *testing.T) {
 		"X-Request-Id":  []string{"req-1", "req-2"},
 	}
 
-	got := RedactHeaders(in)
+	got := Headers(in)
 
-	if v := got.Get("Authorization"); v != Redacted {
-		t.Errorf("Authorization = %q, want %q", v, Redacted)
+	if v := got.Get("Authorization"); v != Placeholder {
+		t.Errorf("Authorization = %q, want %q", v, Placeholder)
 	}
-	if v := got.Get("Cookie"); v != Redacted {
-		t.Errorf("Cookie = %q, want %q", v, Redacted)
+	if v := got.Get("Cookie"); v != Placeholder {
+		t.Errorf("Cookie = %q, want %q", v, Placeholder)
 	}
 	if v := got.Get("Content-Type"); v != "application/json" {
 		t.Errorf("Content-Type = %q, want it preserved", v)
@@ -49,15 +49,15 @@ func TestRedactHeaders(t *testing.T) {
 
 	// The original must not be modified; callers still need to send the real value.
 	if in.Get("Authorization") != "Bearer supersecret" {
-		t.Error("RedactHeaders mutated its input")
+		t.Error("Headers mutated its input")
 	}
 
-	if RedactHeaders(nil) != nil {
-		t.Error("RedactHeaders(nil) should return nil")
+	if Headers(nil) != nil {
+		t.Error("Headers(nil) should return nil")
 	}
 }
 
-func TestRedactURL(t *testing.T) {
+func TestURL(t *testing.T) {
 	cases := map[string]struct {
 		in       string
 		mustHide []string
@@ -88,34 +88,34 @@ func TestRedactURL(t *testing.T) {
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			got := RedactURL(tc.in)
+			got := URL(tc.in)
 			for _, secret := range tc.mustHide {
 				if strings.Contains(got, secret) {
-					t.Errorf("RedactURL(%q) = %q, still contains %q", tc.in, got, secret)
+					t.Errorf("URL(%q) = %q, still contains %q", tc.in, got, secret)
 				}
 			}
 			for _, keep := range tc.mustKeep {
 				if !strings.Contains(got, keep) {
-					t.Errorf("RedactURL(%q) = %q, lost %q", tc.in, got, keep)
+					t.Errorf("URL(%q) = %q, lost %q", tc.in, got, keep)
 				}
 			}
 		})
 	}
 
-	if got := RedactURL(""); got != "" {
-		t.Errorf("RedactURL(\"\") = %q, want empty", got)
+	if got := URL(""); got != "" {
+		t.Errorf("URL(\"\") = %q, want empty", got)
 	}
 }
 
 // An unparseable URL cannot be shown to be safe, so it must not be passed
 // through on the assumption that it is harmless.
-func TestRedactURLFailsClosed(t *testing.T) {
-	if got := RedactURL("http://[::1]:namedport/x?token=secret"); strings.Contains(got, "secret") {
+func TestURLFailsClosed(t *testing.T) {
+	if got := URL("http://[::1]:namedport/x?token=secret"); strings.Contains(got, "secret") {
 		t.Fatalf("an unparseable URL leaked its query: %q", got)
 	}
 }
 
-func TestRedactMessage(t *testing.T) {
+func TestMessage(t *testing.T) {
 	cases := map[string]struct {
 		in       string
 		mustHide string
@@ -142,28 +142,28 @@ func TestRedactMessage(t *testing.T) {
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			got := RedactMessage(tc.in)
+			got := Message(tc.in)
 			if tc.mustHide != "" && strings.Contains(got, tc.mustHide) {
-				t.Errorf("RedactMessage(%q) = %q, still contains %q", tc.in, got, tc.mustHide)
+				t.Errorf("Message(%q) = %q, still contains %q", tc.in, got, tc.mustHide)
 			}
 			if tc.mustKeep != "" && !strings.Contains(got, tc.mustKeep) {
-				t.Errorf("RedactMessage(%q) = %q, lost %q", tc.in, got, tc.mustKeep)
+				t.Errorf("Message(%q) = %q, lost %q", tc.in, got, tc.mustKeep)
 			}
 		})
 	}
 
-	if got := RedactMessage(""); got != "" {
-		t.Errorf("RedactMessage(\"\") = %q, want empty", got)
+	if got := Message(""); got != "" {
+		t.Errorf("Message(\"\") = %q, want empty", got)
 	}
 }
 
-func TestRedactMessageHandlesMultipleURLs(t *testing.T) {
+func TestMessageHandlesMultipleURLs(t *testing.T) {
 	in := `first "http://a/?token=aaa" then "https://b/?secret=bbb" done`
 
-	got := RedactMessage(in)
+	got := Message(in)
 	for _, secret := range []string{"aaa", "bbb"} {
 		if strings.Contains(got, secret) {
-			t.Errorf("RedactMessage leaked %q: %q", secret, got)
+			t.Errorf("Message leaked %q: %q", secret, got)
 		}
 	}
 	if !strings.Contains(got, "done") {
@@ -171,14 +171,10 @@ func TestRedactMessageHandlesMultipleURLs(t *testing.T) {
 	}
 }
 
-func TestRemoteAddrHandlesNil(t *testing.T) {
-	if got := remoteAddr(nil); got != "" {
-		t.Errorf("remoteAddr(nil) = %q, want empty", got)
-	}
-}
+func TestNonSensitiveHeadersSurviveUnchanged(t *testing.T) {
+	in := http.Header{"Accept": []string{"application/json"}}
 
-func TestTrackedFromRejectsUnknownConn(t *testing.T) {
-	if _, ok := trackedFrom(nil); ok {
-		t.Error("trackedFrom(nil) should not report success")
+	if got := Headers(in).Get("Accept"); got != "application/json" {
+		t.Errorf("Accept = %q, want it preserved", got)
 	}
 }
