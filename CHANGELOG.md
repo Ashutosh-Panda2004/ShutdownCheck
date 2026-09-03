@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `internal/analyze`: the diagnosis engine. Phase classification with strict
+  boundaries, all eighteen failure signatures as independent rules returning
+  structured evidence, profile-aware severity, gate evaluation, the 0-100
+  shutdown score with its full derivation, and multi-trial aggregation where a
+  failure outranks an inconclusive run and a pass can override neither.
 - `internal/target`: the `Target` interface plus process and managed-command
   implementations, with process-group ownership, readiness gating that fails
   fast when a target dies during startup, guaranteed idempotent cleanup, and
@@ -39,8 +44,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   schedulers and monitors can be tested without sleeping.
 - `pkg/schema`: the public, versioned report contract, guarded by a golden file.
   Absent measurements serialise as `null` rather than `0`.
-- `internal/analyze`: the 18-entry failure signature catalogue and the shutdown
-  `Policy`/`Profile` model. Detection rules follow in Phase 4.
 - `internal/config`: `shutdowncheck.yaml` parsing with strict unknown-field
   rejection, multi-problem validation, and resolution into a runnable scenario.
 - Fuzz targets for the NDJSON and YAML parsers.
@@ -48,6 +51,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Architecture guard tests that fail the build if `internal/analyze`,
   `internal/timeline` or `pkg/schema` gain an I/O dependency or read the clock,
   and if `cmd/` imports anything other than `internal/cli`.
+- A registry guard that fails the build if any signature lacks both a positive
+  and a negative fixture, so the guarantee cannot rot as rules are added.
 - Build tooling: `Makefile` and a PowerShell equivalent (`make.ps1`) with
   matching targets.
 - CI: build, test and race across Linux, macOS and Windows; coverage;
@@ -70,5 +75,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Process and managed-command targets require POSIX signals and are therefore
   unavailable on Windows, where they fail with an explicit error pointing at the
   Docker target. See `docs/adr/0008-windows-support-strategy.md`.
+- Stack-specific remediation text is not written yet; findings currently carry
+  their impact and documentation link. The content lands with the `explain`
+  command in Phase 5.
 
 [Unreleased]: https://github.com/shutdowncheck/shutdowncheck/commits/main
