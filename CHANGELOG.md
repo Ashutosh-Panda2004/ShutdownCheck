@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `internal/probe`: instrumented HTTP prober built on `httptrace`, with
+  connection-layer forensics (reuse, `Connection: close`, and FIN vs RST
+  termination), an error classifier that separates refused, reset, timeout, EOF,
+  TLS and DNS failures, and independent readiness and raw-TCP listener probes.
+- Secret redaction for headers, URLs and error messages, applied at the
+  recording boundary so credentials cannot reach a report, a log or the NDJSON
+  stream.
+- `internal/load`: open-model traffic generator with a precomputed dispatch
+  schedule, bounded concurrency with measured back-pressure, deterministic
+  weighted request selection, and Little's Law calibration that marks the run
+  unachievable rather than silently running at the ceiling.
+- `internal/testutil`: goroutine-leak detection for tests, with no third-party
+  dependency.
+- Request events now carry their scheduled dispatch time, so queueing inside the
+  generator is measurable and distinguishable from service latency.
 - `internal/timeline`: the immutable event model every observer writes into and
   analysis reads from, with a concurrency-safe bounded recorder and a
   round-trippable NDJSON codec for offline re-analysis.

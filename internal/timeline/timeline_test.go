@@ -224,6 +224,40 @@ func TestRequestLatency(t *testing.T) {
 	}
 }
 
+func TestRequestQueueDelay(t *testing.T) {
+	cases := map[string]struct {
+		event RequestEvent
+		want  time.Duration
+	}{
+		"dispatched late": {
+			RequestEvent{Scheduled: 100 * time.Millisecond, Sent: 180 * time.Millisecond},
+			80 * time.Millisecond,
+		},
+		"dispatched on time": {
+			RequestEvent{Scheduled: 100 * time.Millisecond, Sent: 100 * time.Millisecond},
+			0,
+		},
+		// A request cannot be dispatched before it was scheduled; treat any such
+		// record as zero rather than reporting a negative delay.
+		"sent before scheduled": {
+			RequestEvent{Scheduled: 200 * time.Millisecond, Sent: 100 * time.Millisecond},
+			0,
+		},
+		"no schedule recorded": {
+			RequestEvent{Sent: 100 * time.Millisecond},
+			0,
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			if got := tc.event.QueueDelay(); got != tc.want {
+				t.Errorf("QueueDelay() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestOutcomeSucceeded(t *testing.T) {
 	if !OutcomeOK.Succeeded() {
 		t.Error("OutcomeOK must count as success")

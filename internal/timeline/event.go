@@ -137,6 +137,7 @@ type RequestEvent struct {
 	Definition string        `json:"definition,omitempty"`
 	Method     string        `json:"method"`
 	URL        string        `json:"url"`
+	Scheduled  time.Duration `json:"scheduled_ns"`
 	Sent       time.Duration `json:"sent_ns"`
 	Done       time.Duration `json:"done_ns"`
 	Status     int           `json:"status,omitempty"`
@@ -147,8 +148,22 @@ type RequestEvent struct {
 	Warmup     bool          `json:"warmup,omitempty"`
 }
 
-// Latency is how long the attempt took.
+// Latency is how long the attempt took once it was actually dispatched.
 func (r RequestEvent) Latency() time.Duration { return r.Done - r.Sent }
+
+// QueueDelay is how long the request waited inside the load generator before
+// being dispatched.
+//
+// It measures the tool, not the target. A rising queue delay means the
+// generator could not maintain its offered rate, which is the signature of
+// coordinated omission and makes the run less trustworthy rather than making
+// the service look worse.
+func (r RequestEvent) QueueDelay() time.Duration {
+	if r.Scheduled == 0 || r.Sent < r.Scheduled {
+		return 0
+	}
+	return r.Sent - r.Scheduled
+}
 
 // ConnectionEvent records a point in a connection's life, including the
 // forensic details that distinguish orderly drain from socket destruction.
