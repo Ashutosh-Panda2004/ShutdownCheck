@@ -984,11 +984,11 @@ Distribution is a first-class feature, not an afterthought — the tool's whole 
 1. **`SC006` default severity under `--profile auto`.** ✅ *Resolved in Phase 4.* Severity is profile-dependent: `error` under `lame-duck` and `kubernetes`, `warn` under `standalone` and `docker`, and `info` under `strict` — where closing the listener immediately is the requirement rather than the defect. The same evidence therefore reaches opposite conclusions under different deployment models, which is asserted directly by `TestProfileChangesTheVerdictForTheSameEvidence`.
 2. **Score weight calibration.** ✅ *Resolved in Phase 4.* The Section 9.2 table is pinned by `TestScoreBandsAreCalibrated`, which fixes the intended bands: a correct shutdown scores 100 (A), a single minor flaw stays in A, a service that closes its listener too early lands in B, and a thoroughly broken one lands in F. Changing a weight now fails that test rather than silently rescaling every published score.
 3. **Readiness auto-discovery.** ✅ *Resolved in Phase 3.* The tool does **not** guess at `/readyz`, `/healthz` or similar. Probing only happens against an explicitly configured endpoint, and `SC007` never fires when readiness was not probed. Guessing would mean an unconfigured probe could be mistaken for evidence, and absence of data must never be read as data.
+4. **NDJSON re-analysis subcommand.** ✅ *Resolved in Phase 5 — built.* `shutdowncheck analyze run.ndjson --profile kubernetes` re-judges a recorded run without repeating it. It was cheap because analysis is pure, and it is what makes the separation of measurement from interpretation concrete: the same recording passes under `standalone` and fails under `kubernetes`, which is asserted by `TestAnalyzeReJudgesRecordedEvidence`. It also gives maintainers a way to reproduce a misdiagnosis report exactly, from the NDJSON the reporter attached.
 
 ### Still open
 
-4. **Bundled conformance servers.** Should `shutdowncheck demo` embed a tiny broken/fixed Go server so a first-time user can see a failing run with zero setup? Strong for onboarding; small binary-size cost. *(Decide in Phase 6.)*
-5. **NDJSON re-analysis subcommand.** `shutdowncheck analyze run.ndjson --profile kubernetes` — cheap given the pure analyzer, and very useful for support. *(Decide in Phase 5.)*
+5. **Bundled conformance servers.** Should `shutdowncheck demo` embed a tiny broken/fixed Go server so a first-time user can see a failing run with zero setup? Strong for onboarding; small binary-size cost. *(Decide in Phase 6.)*
 
 ---
 

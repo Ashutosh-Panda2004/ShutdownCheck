@@ -1,0 +1,21 @@
+ShutdownCheck 1.0.0   profile=standalone
+  GET http://localhost:8080/   fixed rate to 0 rps (12 in flight at the signal)
+
+TIMELINE                                                       T=0 is the signal
+         -4s                                                          0s             +1s
+         |-------------------------------------------------------------|---------------|
+ traffic █                                                            ████              
+ process ──────────────────────────────────────────────────────────────────────────────╳  exit at +1s
+ budget                                                                |===============|  grace 30s
+
+REQUESTS
+  before the signal          20      20 ok      0 failed
+  in flight at signal        12      12 ok      0 failed
+
+VERDICT: PASS      score 95/100 (A)
+
+  ! SC014   DRAIN_LATENCY_SPIKE
+      Latency during drain rose to 4.0x the baseline (p99 200ms against 50ms).
+      Upstream callers time out even where requests technically complete.
+
+  Run `shutdowncheck explain SC014` for how to fix this.

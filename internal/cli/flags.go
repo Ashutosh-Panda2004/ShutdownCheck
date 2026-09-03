@@ -1,0 +1,69 @@
+package cli
+
+import (
+	"fmt"
+	"strings"
+)
+
+// repeatedString collects a flag given more than once.
+type repeatedString []string
+
+func (r *repeatedString) String() string { return strings.Join(*r, ",") }
+
+func (r *repeatedString) Set(value string) error {
+	if value == "" {
+		return fmt.Errorf("value must not be empty")
+	}
+	*r = append(*r, value)
+	return nil
+}
+
+// idList collects signature identifiers, accepting either repetition or a
+// comma-separated list so that `--ignore SC009,SC014` behaves as people expect.
+type idList []string
+
+func (l *idList) String() string { return strings.Join(*l, ",") }
+
+func (l *idList) Set(value string) error {
+	for _, part := range strings.Split(value, ",") {
+		part = strings.ToUpper(strings.TrimSpace(part))
+		if part == "" {
+			continue
+		}
+		*l = append(*l, part)
+	}
+	return nil
+}
+
+// headerList collects repeated `--header Name: value` flags.
+type headerList map[string]string
+
+func (h *headerList) String() string {
+	if h == nil || *h == nil {
+		return ""
+	}
+
+	parts := make([]string, 0, len(*h))
+	for name, value := range *h {
+		parts = append(parts, name+": "+value)
+	}
+	return strings.Join(parts, ", ")
+}
+
+func (h *headerList) Set(value string) error {
+	name, headerValue, ok := strings.Cut(value, ":")
+	if !ok {
+		return fmt.Errorf("expected `Name: value`, got %q", value)
+	}
+
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return fmt.Errorf("header name must not be empty")
+	}
+
+	if *h == nil {
+		*h = headerList{}
+	}
+	(*h)[name] = strings.TrimSpace(headerValue)
+	return nil
+}

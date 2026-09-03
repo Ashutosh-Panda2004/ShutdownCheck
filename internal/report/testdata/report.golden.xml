@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="shutdowncheck" tests="19" failures="5">
+  <testsuite name="shutdowncheck" tests="19" failures="5">
+    <testcase name="SC000 INSUFFICIENT_INFLIGHT" classname="shutdowncheck.signatures"></testcase>
+    <testcase name="SC001 SIGTERM_IGNORED" classname="shutdowncheck.signatures"></testcase>
+    <testcase name="SC002 SIGKILL_REQUIRED" classname="shutdowncheck.signatures"></testcase>
+    <testcase name="SC003 IN_FLIGHT_DROPPED" classname="shutdowncheck.signatures">
+      <failure message="6 of 22 in-flight request(s) were destroyed during shutdown." type="IN_FLIGHT_DROPPED">6 of 22 in-flight request(s) were destroyed during shutdown.&#xA;&#xA;In-progress user requests fail on every deploy.&#xA;&#xA;failed_reset=6 in_flight_failed=6 in_flight_total=22</failure>
+    </testcase>
+    <testcase name="SC004 ABRUPT_CONNECTION_RESET" classname="shutdowncheck.signatures">
+      <failure message="1 connection(s) were reset rather than closed cleanly after the signal." type="ABRUPT_CONNECTION_RESET">1 connection(s) were reset rather than closed cleanly after the signal.&#xA;&#xA;Clients see ECONNRESET, which breaks retries for non-idempotent requests.&#xA;&#xA;closed_by_fin=0 reset_after_signal=1</failure>
+    </testcase>
+    <testcase name="SC005 LISTENER_OPEN_AFTER_WINDOW" classname="shutdowncheck.signatures"></testcase>
+    <testcase name="SC006 NO_DEREGISTRATION_WINDOW" classname="shutdowncheck.signatures">
+      <failure message="The listener closed 10ms after the signal, before de-registration could propagate." type="NO_DEREGISTRATION_WINDOW">The listener closed 10ms after the signal, before de-registration could propagate.&#xA;&#xA;502s at the ingress on every deploy, because routing updates land afterwards.&#xA;&#xA;closed_after_ms=10 minimum_ms=500</failure>
+    </testcase>
+    <testcase name="SC007 READINESS_NOT_FLIPPED" classname="shutdowncheck.signatures">
+      <failure message="The readiness endpoint kept reporting healthy for the entire shutdown." type="READINESS_NOT_FLIPPED">The readiness endpoint kept reporting healthy for the entire shutdown.&#xA;&#xA;The load balancer keeps routing to a dying instance for a full probe interval.&#xA;&#xA;readiness_flipped=false</failure>
+    </testcase>
+    <testcase name="SC008 READINESS_FLIP_SLOW" classname="shutdowncheck.signatures"></testcase>
+    <testcase name="SC009 KEEPALIVE_NOT_TERMINATED" classname="shutdowncheck.signatures"></testcase>
+    <testcase name="SC010 SHUTDOWN_BUDGET_EXCEEDED" classname="shutdowncheck.signatures"></testcase>
+    <testcase name="SC011 EARLY_EXIT" classname="shutdowncheck.signatures"></testcase>
+    <testcase name="SC012 PORT_HELD_AFTER_EXIT" classname="shutdowncheck.signatures"></testcase>
+    <testcase name="SC013 NONZERO_EXIT_CODE" classname="shutdowncheck.signatures"></testcase>
+    <testcase name="SC014 DRAIN_LATENCY_SPIKE" classname="shutdowncheck.signatures"></testcase>
+    <testcase name="SC015 ACCEPT_WITHOUT_RESPONSE" classname="shutdowncheck.signatures"></testcase>
+    <testcase name="SC016 READINESS_FLAPPED" classname="shutdowncheck.signatures"></testcase>
+    <testcase name="SC017 POST_KILL_TRAFFIC_LOSS" classname="shutdowncheck.signatures"></testcase>
+    <testcase name="gate max_inflight_drop_pct" classname="shutdowncheck.gates">
+      <failure message="27.27 exceeds the configured limit of 0" type="gate"></failure>
+    </testcase>
+  </testsuite>
+</testsuites>

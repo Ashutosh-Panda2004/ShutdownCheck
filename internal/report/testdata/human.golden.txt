@@ -1,0 +1,46 @@
+ShutdownCheck 1.0.0   profile=kubernetes   target=./bin/api --port 8080
+  POST http://localhost:8080/api/orders   calibrated to 340 rps (22 in flight at the signal)
+
+TIMELINE                                                       T=0 is the signal
+         -4s                        0s                                               +7s
+         |---------------------------|-------------------------------------------------|
+ traffic ███████████████████████████▓▓▓░░░░░░░░░░░░░                                    
+ ready   ───────────────────────────────────────────────────────────────────────────────
+ listen                       ───────···················································
+ process ──────────────────────────────────────────────────────────────────────────────╳  exit at +7s
+ budget                              |=================================================|  grace 30s
+
+REQUESTS
+  before the signal          40      40 ok      0 failed
+  in flight at signal        22      16 ok      6 failed   (6 reset)
+  after the signal           24       0 ok     24 failed   (24 refused)
+
+CONNECTIONS
+  opened                                         1
+  reused after the signal                        1
+  closed with Connection: close                  0   clients were never told to close
+  terminated by RST rather than FIN              1   abrupt
+
+VERDICT: FAIL      score 36/100 (F)
+  gate max_inflight_drop_pct: 27.27 exceeds the limit of 0
+
+  x SC003   IN_FLIGHT_DROPPED
+      6 of 22 in-flight request(s) were destroyed during shutdown.
+      In-progress user requests fail on every deploy.
+  x SC004   ABRUPT_CONNECTION_RESET
+      1 connection(s) were reset rather than closed cleanly after the signal.
+      Clients see ECONNRESET, which breaks retries for non-idempotent requests.
+  x SC006   NO_DEREGISTRATION_WINDOW
+      The listener closed 10ms after the signal, before de-registration could propagate.
+      502s at the ingress on every deploy, because routing updates land afterwards.
+  x SC007   READINESS_NOT_FLIPPED
+      The readiness endpoint kept reporting healthy for the entire shutdown.
+      The load balancer keeps routing to a dying instance for a full probe interval.
+  ! SC009   KEEPALIVE_NOT_TERMINATED
+      1 connection(s) were reused after the signal, but the server never asked clients to close them.
+      Clients keep reusing a socket that is about to die, so the next request fails.
+  ! SC014   DRAIN_LATENCY_SPIKE
+      Latency during drain rose to 3.7x the baseline (p99 220ms against 60ms).
+      Upstream callers time out even where requests technically complete.
+
+  Run `shutdowncheck explain SC003` for how to fix this.

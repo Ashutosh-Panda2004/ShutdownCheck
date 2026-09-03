@@ -27,6 +27,9 @@ const (
 // SchemaVersion is the only supported config file version.
 const SchemaVersion = 1
 
+// DefaultConfigPath is looked for when no --config flag is given.
+const DefaultConfigPath = "shutdowncheck.yaml"
+
 // Duration is a time.Duration that reads as a YAML string such as "30s".
 type Duration time.Duration
 

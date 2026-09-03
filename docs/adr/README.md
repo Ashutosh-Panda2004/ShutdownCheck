@@ -19,3 +19,4 @@ Copy [0000-template.md](0000-template.md) to start a new one. ADRs are immutable
 | [0009](0009-public-versioned-report-schema.md) | The JSON report is a public, versioned contract | Accepted |
 | [0010](0010-no-telemetry.md) | No telemetry, ever | Accepted |
 | [0011](0011-pure-analysis-core.md) | The analysis core is pure and mechanically enforced | Accepted |
+| [0012](0012-cli-without-cobra.md) | Build the CLI on the standard library rather than Cobra | Accepted |

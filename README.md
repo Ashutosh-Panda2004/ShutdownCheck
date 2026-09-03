@@ -1,9 +1,11 @@
 # ShutdownCheck
 
-> **Status: pre-alpha (Phase 0 — scaffold).** The tool does not do anything useful yet.
-> The design is complete and locked in [shutdowncheck-spec.md](shutdowncheck-spec.md);
-> the build order is in [DEVELOPMENT-PLAN.md](DEVELOPMENT-PLAN.md).
-> Stars and issues welcome, but do not depend on it yet.
+> **Status: alpha.** The tool runs end to end and produces a verdict. Process,
+> managed-command targets and all report formats work on Linux and macOS;
+> Windows needs the Docker target, which lands in Phase 7. Container and
+> Kubernetes targets, the cross-language conformance suite and published
+> binaries are still to come — see [DEVELOPMENT-PLAN.md](DEVELOPMENT-PLAN.md).
+> Not yet recommended as a merge gate you depend on.
 
 **ShutdownCheck terminates your service the way your orchestrator will — under real load — and tells you exactly which stage of shutdown you got wrong, and how to fix it in your framework.**
 
@@ -46,9 +48,24 @@ ShutdownCheck spawns the process, waits for readiness, calibrates load so that r
 ```
 VERDICT: FAIL      score 34/100 (F)      consistent across 3/3 trials
 
-  ✗ SC003  IN_FLIGHT_DROPPED            6 of 22 in-flight requests destroyed
-  ✗ SC006  NO_DEREGISTRATION_WINDOW     listener closed 12ms after SIGTERM
-  ✗ SC007  READINESS_NOT_FLIPPED        /readyz returned 200 for the entire shutdown
+  x SC003  IN_FLIGHT_DROPPED            6 of 22 in-flight requests destroyed
+  x SC006  NO_DEREGISTRATION_WINDOW     listener closed 12ms after SIGTERM
+  x SC007  READINESS_NOT_FLIPPED        /readyz returned 200 for the entire shutdown
+```
+
+Every finding has an explanation and a fix:
+
+```console
+$ shutdowncheck explain SC006
+```
+
+A run can be recorded and re-judged later without repeating it, which is useful
+when deciding whether behaviour that is fine standalone would survive behind a
+load balancer:
+
+```console
+$ shutdowncheck run ... --format ndjson --output run.ndjson
+$ shutdowncheck analyze run.ndjson --profile kubernetes
 ```
 
 Full sample output is in [spec section 3.3](shutdowncheck-spec.md).

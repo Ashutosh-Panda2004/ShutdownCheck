@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A working command line: `run`, `analyze`, `explain`, `validate` and `version`,
+  with the exit-code taxonomy from the specification so a pipeline can tell a
+  detected defect from a misconfigured invocation.
+- `shutdowncheck analyze run.ndjson --profile kubernetes` re-judges a recorded
+  run without repeating it. The same evidence can pass standalone and fail
+  behind a load balancer, which is the point of separating measurement from
+  interpretation.
+- `internal/report`: terminal output with a timeline that puts traffic,
+  readiness, the listener, the process and the grace budget on one shared axis,
+  plus JSON, JUnit XML, Markdown, NDJSON and an SVG score badge. Colour is
+  disabled automatically off a terminal and honours NO_COLOR.
+- `internal/remediate`: stack fingerprinting and embedded documentation, with a
+  generated page for any signature that has no hand-written one, so no finding
+  is ever left unexplained.
 - `internal/analyze`: the diagnosis engine. Phase classification with strict
   boundaries, all eighteen failure signatures as independent rules returning
   structured evidence, profile-aware severity, gate evaluation, the 0-100
@@ -61,7 +75,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Governance: Apache-2.0 licence, contributing guide, code of conduct, security
   policy, issue templates (including a misdiagnosis template that collects the
   raw timeline) and a pull request template.
-- Architecture decision records ADR-0001 through ADR-0011 capturing the locked
+- Architecture decision records ADR-0001 through ADR-0012 capturing the locked
   decisions from the specification.
 
 ### Fixed

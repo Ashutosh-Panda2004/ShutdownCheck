@@ -1,0 +1,204 @@
+{
+  "schema_version": "1.0",
+  "tool_version": "1.0.0",
+  "verdict": "fail",
+  "score": {
+    "value": 36,
+    "grade": "F",
+    "weights_version": "1.0"
+  },
+  "run": {
+    "started_at": "2026-09-03T10:15:18Z",
+    "profile": "kubernetes",
+    "seed": 0,
+    "trials": {
+      "total": 1,
+      "failed": 1,
+      "consistent": true
+    }
+  },
+  "target": {
+    "kind": "command",
+    "label": "./bin/api --port 8080",
+    "pid": 12345,
+    "detected_stack": "dotnet-aspnetcore",
+    "grace_period_ms": 30000
+  },
+  "probe": {
+    "url": "http://localhost:8080/api/orders",
+    "method": "POST",
+    "readiness_url": "http://localhost:8080/readyz"
+  },
+  "load": {
+    "calibrated": true,
+    "rps": 340,
+    "target_in_flight": 20,
+    "observed_in_flight_at_signal": 22,
+    "baseline_latency_ms": {
+      "p50": 60,
+      "p95": 60,
+      "p99": 60
+    }
+  },
+  "timeline": {
+    "signal_sent_at_ms": 0,
+    "readiness_flipped_at_ms": null,
+    "listener_closed_at_ms": 10,
+    "sigkill_sent_at_ms": null,
+    "process_exited_at_ms": 7000,
+    "port_released_at_ms": 7000,
+    "shutdown_duration_ms": 7000
+  },
+  "requests": {
+    "total": 86,
+    "by_phase": {
+      "warmup": {
+        "count": 0,
+        "ok": 0,
+        "failed": 0
+      },
+      "steady": {
+        "count": 40,
+        "ok": 40,
+        "failed": 0
+      },
+      "in_flight": {
+        "count": 22,
+        "ok": 16,
+        "failed": 6,
+        "failures": {
+          "reset": 6
+        }
+      },
+      "post_signal": {
+        "count": 24,
+        "ok": 0,
+        "failed": 24,
+        "failures": {
+          "refused": 24
+        }
+      },
+      "post_window": {
+        "count": 0,
+        "ok": 0,
+        "failed": 0
+      },
+      "at_sigkill": {
+        "count": 0,
+        "ok": 0,
+        "failed": 0
+      }
+    },
+    "drain_latency_ms": {
+      "p50": 212,
+      "p95": 220,
+      "p99": 220
+    }
+  },
+  "connections": {
+    "opened": 1,
+    "reused_after_signal": 1,
+    "closed_with_connection_close": 0,
+    "closed_by_fin": 0,
+    "closed_by_rst": 1
+  },
+  "process": {
+    "exit_code": 0,
+    "port_held_after_exit": false
+  },
+  "findings": [
+    {
+      "id": "SC003",
+      "name": "IN_FLIGHT_DROPPED",
+      "stage": "S6",
+      "severity": "error",
+      "summary": "6 of 22 in-flight request(s) were destroyed during shutdown.",
+      "evidence": {
+        "failed_reset": 6,
+        "in_flight_failed": 6,
+        "in_flight_total": 22
+      },
+      "impact": "In-progress user requests fail on every deploy.",
+      "remediation_id": "SC003",
+      "docs_url": "https://shutdowncheck.dev/signatures/SC003"
+    },
+    {
+      "id": "SC004",
+      "name": "ABRUPT_CONNECTION_RESET",
+      "stage": "S5",
+      "severity": "error",
+      "summary": "1 connection(s) were reset rather than closed cleanly after the signal.",
+      "evidence": {
+        "closed_by_fin": 0,
+        "reset_after_signal": 1
+      },
+      "impact": "Clients see ECONNRESET, which breaks retries for non-idempotent requests.",
+      "remediation_id": "SC004",
+      "docs_url": "https://shutdowncheck.dev/signatures/SC004"
+    },
+    {
+      "id": "SC006",
+      "name": "NO_DEREGISTRATION_WINDOW",
+      "stage": "S3",
+      "severity": "error",
+      "summary": "The listener closed 10ms after the signal, before de-registration could propagate.",
+      "evidence": {
+        "closed_after_ms": 10,
+        "minimum_ms": 500
+      },
+      "impact": "502s at the ingress on every deploy, because routing updates land afterwards.",
+      "remediation_id": "SC006",
+      "docs_url": "https://shutdowncheck.dev/signatures/SC006"
+    },
+    {
+      "id": "SC007",
+      "name": "READINESS_NOT_FLIPPED",
+      "stage": "S2",
+      "severity": "error",
+      "summary": "The readiness endpoint kept reporting healthy for the entire shutdown.",
+      "evidence": {
+        "readiness_flipped": false
+      },
+      "impact": "The load balancer keeps routing to a dying instance for a full probe interval.",
+      "remediation_id": "SC007",
+      "docs_url": "https://shutdowncheck.dev/signatures/SC007"
+    },
+    {
+      "id": "SC009",
+      "name": "KEEPALIVE_NOT_TERMINATED",
+      "stage": "S5",
+      "severity": "warn",
+      "summary": "1 connection(s) were reused after the signal, but the server never asked clients to close them.",
+      "evidence": {
+        "connection_close_sent": 0,
+        "reused_after_signal": 1
+      },
+      "impact": "Clients keep reusing a socket that is about to die, so the next request fails.",
+      "remediation_id": "SC009",
+      "docs_url": "https://shutdowncheck.dev/signatures/SC009"
+    },
+    {
+      "id": "SC014",
+      "name": "DRAIN_LATENCY_SPIKE",
+      "stage": "S6",
+      "severity": "warn",
+      "summary": "Latency during drain rose to 3.7x the baseline (p99 220ms against 60ms).",
+      "evidence": {
+        "baseline_p99_ms": 60,
+        "drain_p99_ms": 220,
+        "factor": 3.67
+      },
+      "impact": "Upstream callers time out even where requests technically complete.",
+      "remediation_id": "SC014",
+      "docs_url": "https://shutdowncheck.dev/signatures/SC014"
+    }
+  ],
+  "gates": [
+    {
+      "name": "max_inflight_drop_pct",
+      "threshold": 0,
+      "actual": 27.27,
+      "passed": false
+    }
+  ]
+}
