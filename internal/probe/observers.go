@@ -117,8 +117,8 @@ func NewListener(addr string, timeout time.Duration, now func() time.Duration) *
 	return &Listener{addr: addr, dialer: &net.Dialer{Timeout: timeout}, timeout: timeout, now: now}
 }
 
-// Probe performs one dial and closes it immediately.
-func (l *Listener) Probe(ctx context.Context) timeline.Event {
+// Poll performs one dial and closes it immediately.
+func (l *Listener) Poll(ctx context.Context) timeline.Event {
 	start := l.now()
 
 	conn, err := l.dialer.DialContext(ctx, "tcp", l.addr)

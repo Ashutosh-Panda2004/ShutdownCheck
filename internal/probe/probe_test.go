@@ -418,14 +418,14 @@ func TestListenerProbe(t *testing.T) {
 	now := func() time.Duration { return time.Since(start) }
 	l := NewListener(addr, time.Second, now)
 
-	open := l.Probe(context.Background())
+	open := l.Poll(context.Background())
 	if !open.Listener.Accepting {
 		t.Fatalf("listener should be accepting, got outcome %q", open.Listener.Outcome)
 	}
 
 	srv.Close()
 
-	closed := l.Probe(context.Background())
+	closed := l.Poll(context.Background())
 	if closed.Listener.Accepting {
 		t.Fatal("listener should not be accepting after the server closed")
 	}

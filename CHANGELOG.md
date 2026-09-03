@@ -9,13 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `internal/target`: the `Target` interface plus process and managed-command
+  implementations, with process-group ownership, readiness gating that fails
+  fast when a target dies during startup, guaranteed idempotent cleanup, and
+  safety guards that refuse PID 1 and shutdowncheck's own process.
+- `internal/run`: the run state machine, which drives preflight, warmup,
+  calibration, steady state, the optional pre-stop hold, signal delivery with
+  skew measurement, SIGKILL escalation at grace expiry, and the post-exit port
+  check. Traffic runs as one continuous phase spanning the signal.
+- Target log capture with per-line and total byte caps and secret redaction.
+- `internal/redact`: extracted from `internal/probe` now that probing, target log
+  capture and reporting all need it.
 - `internal/probe`: instrumented HTTP prober built on `httptrace`, with
   connection-layer forensics (reuse, `Connection: close`, and FIN vs RST
   termination), an error classifier that separates refused, reset, timeout, EOF,
   TLS and DNS failures, and independent readiness and raw-TCP listener probes.
-- Secret redaction for headers, URLs and error messages, applied at the
-  recording boundary so credentials cannot reach a report, a log or the NDJSON
-  stream.
 - `internal/load`: open-model traffic generator with a precomputed dispatch
   schedule, bounded concurrency with measured back-pressure, deterministic
   weighted request selection, and Little's Law calibration that marks the run
@@ -56,5 +64,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A config file containing an empty scenario stub crashed validation with a nil
   pointer dereference. Found by fuzzing; the crashing input is committed as a
   regression seed.
+
+### Known limitations
+
+- Process and managed-command targets require POSIX signals and are therefore
+  unavailable on Windows, where they fail with an explicit error pointing at the
+  Docker target. See `docs/adr/0008-windows-support-strategy.md`.
 
 [Unreleased]: https://github.com/shutdowncheck/shutdowncheck/commits/main

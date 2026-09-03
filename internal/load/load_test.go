@@ -3,7 +3,6 @@ package load
 import (
 	"context"
 	"errors"
-	"math"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -545,10 +544,15 @@ func (p *realSleepProber) Do(ctx context.Context, _ probe.Request) probe.Attempt
 // Calibration is only useful if the rate it derives actually produces the
 // requested concurrency, so the two halves are checked together end to end.
 //
-// The assertion is on mean in-flight, not peak. Little's Law predicts the mean;
-// the instantaneous peak runs higher because timer granularity bunches
-// dispatches together, and asserting on it would be testing the host's clock
-// resolution rather than the calibration.
+// The band is deliberately generous. The exact arithmetic is asserted purely in
+// TestCalibrateDerivesRateFromLittlesLaw; what this test guards against is an
+// order-of-magnitude error, such as mixing up seconds and milliseconds or using
+// a mean instead of a median. A tight band here would only measure how loaded
+// the host happens to be, and a gate that flakes is a gate that gets deleted.
+//
+// The assertion is on mean in-flight, not peak: Little's Law predicts the mean,
+// and the instantaneous peak runs higher because timer granularity bunches
+// dispatches together.
 func TestCalibratedRateProducesTargetInFlight(t *testing.T) {
 	testutil.NoLeaks(t)
 
@@ -585,8 +589,8 @@ func TestCalibratedRateProducesTargetInFlight(t *testing.T) {
 	}
 
 	mean := busy.Seconds() / elapsed.Seconds()
-	if math.Abs(mean-target)/target > 0.25 {
-		t.Fatalf("mean in-flight was %.2f, want roughly %d (calibrated to %v rps over %v, %d requests)",
+	if mean < target/2.0 || mean > target*2.0 {
+		t.Fatalf("mean in-flight was %.2f, want within 2x of %d (calibrated to %v rps over %v, %d requests)",
 			mean, target, calibration.RPS, elapsed, len(requests))
 	}
 }
