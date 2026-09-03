@@ -5,6 +5,7 @@ PKGS    := ./...
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
 DATE    ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)
+FUZZTIME ?= 30s
 
 LDFLAGS := -s -w \
 	-X main.version=$(VERSION) \
@@ -54,8 +55,9 @@ vuln: ## Check dependencies for known vulnerabilities
 		echo "govulncheck not installed: go install golang.org/x/vuln/cmd/govulncheck@latest"; \
 	fi
 
-fuzz: ## Run fuzz targets briefly (added in Phase 1)
-	@echo "no fuzz targets yet; config and NDJSON parsers get them in Phase 1"
+fuzz: ## Run each fuzz target for FUZZTIME (default 30s)
+	$(GO) test ./internal/timeline -run=XXX -fuzz=FuzzReadNDJSON -fuzztime=$(FUZZTIME)
+	$(GO) test ./internal/config -run=XXX -fuzz=FuzzParse -fuzztime=$(FUZZTIME)
 
 ci: lint test race cover ## Everything CI runs
 

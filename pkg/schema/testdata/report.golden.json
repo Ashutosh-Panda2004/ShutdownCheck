@@ -1,0 +1,135 @@
+{
+  "schema_version": "1.0",
+  "tool_version": "1.0.0",
+  "verdict": "fail",
+  "score": {
+    "value": 34,
+    "grade": "F",
+    "weights_version": "1.0"
+  },
+  "run": {
+    "started_at": "2026-09-03T10:15:18Z",
+    "profile": "kubernetes",
+    "seed": 42,
+    "trials": {
+      "total": 3,
+      "failed": 3,
+      "consistent": true
+    }
+  },
+  "target": {
+    "kind": "command",
+    "label": "./bin/api --port 8080",
+    "pid": 12345,
+    "detected_stack": "dotnet-aspnetcore",
+    "grace_period_ms": 5000
+  },
+  "probe": {
+    "url": "http://localhost:8080/api/orders",
+    "method": "POST",
+    "readiness_url": "http://localhost:8080/readyz"
+  },
+  "load": {
+    "calibrated": true,
+    "rps": 340,
+    "target_in_flight": 22,
+    "observed_in_flight_at_signal": 22,
+    "baseline_latency_ms": {
+      "p50": 62,
+      "p95": 88,
+      "p99": 104
+    }
+  },
+  "timeline": {
+    "signal_sent_at_ms": 0,
+    "readiness_flipped_at_ms": null,
+    "listener_closed_at_ms": 12,
+    "sigkill_sent_at_ms": 5000,
+    "process_exited_at_ms": 6400,
+    "port_released_at_ms": 6410,
+    "shutdown_duration_ms": 6400
+  },
+  "requests": {
+    "total": 1364,
+    "by_phase": {
+      "warmup": {
+        "count": 0,
+        "ok": 0,
+        "failed": 0
+      },
+      "steady": {
+        "count": 1024,
+        "ok": 1024,
+        "failed": 0
+      },
+      "in_flight": {
+        "count": 22,
+        "ok": 16,
+        "failed": 6,
+        "failures": {
+          "reset": 4,
+          "timeout": 2
+        }
+      },
+      "post_signal": {
+        "count": 318,
+        "ok": 0,
+        "failed": 318,
+        "failures": {
+          "refused": 318
+        }
+      },
+      "post_window": {
+        "count": 0,
+        "ok": 0,
+        "failed": 0
+      },
+      "at_sigkill": {
+        "count": 0,
+        "ok": 0,
+        "failed": 0
+      }
+    },
+    "drain_latency_ms": {
+      "p50": 71,
+      "p95": 210,
+      "p99": 980
+    }
+  },
+  "connections": {
+    "opened": 128,
+    "reused_after_signal": 41,
+    "closed_with_connection_close": 0,
+    "closed_by_fin": 87,
+    "closed_by_rst": 41
+  },
+  "process": {
+    "exit_code": 0,
+    "terminated_by_signal": "SIGKILL",
+    "port_held_after_exit": false
+  },
+  "findings": [
+    {
+      "id": "SC003",
+      "name": "IN_FLIGHT_DROPPED",
+      "stage": "S6",
+      "severity": "error",
+      "summary": "6 of 22 in-flight requests were destroyed during shutdown.",
+      "evidence": {
+        "in_flight_failed": 6,
+        "in_flight_total": 22
+      },
+      "impact": "In-progress user requests fail on every deploy.",
+      "remediation_id": "SC003/dotnet-aspnetcore",
+      "docs_url": "https://shutdowncheck.dev/signatures/SC003"
+    }
+  ],
+  "gates": [
+    {
+      "name": "max_inflight_drop_pct",
+      "threshold": 0,
+      "actual": 27.3,
+      "passed": false
+    }
+  ]
+}

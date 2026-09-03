@@ -115,7 +115,12 @@ switch ($Target) {
         if ($LASTEXITCODE -ne 0) { throw "go.mod/go.sum are not tidy; commit the result of 'go mod tidy'" }
     }
     'vuln' { Target-Vuln }
-    'fuzz' { Write-Host 'no fuzz targets yet; config and NDJSON parsers get them in Phase 1' }
+    'fuzz' {
+        # Committed crashers under testdata/fuzz already run as part of `test`;
+        # this explores for new ones.
+        Invoke-Step 'fuzz timeline' { go test ./internal/timeline '-run=XXX' '-fuzz=FuzzReadNDJSON' '-fuzztime=30s' }
+        Invoke-Step 'fuzz config' { go test ./internal/config '-run=XXX' '-fuzz=FuzzParse' '-fuzztime=30s' }
+    }
     'ci' {
         Target-Lint
         Invoke-Step 'test' { go test ./... }

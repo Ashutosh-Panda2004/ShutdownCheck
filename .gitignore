@@ -9,8 +9,9 @@ coverage.out
 coverage.html
 *.prof
 
-# Fuzzing corpora produced locally (seed corpora are committed under testdata/)
-**/testdata/fuzz/
+# Fuzz regression seeds under testdata/fuzz ARE committed: Go writes each
+# crashing input there, and committing it turns the crash into a permanent
+# regression test. The generated corpus lives in GOCACHE, not here.
 
 # Reports produced by local runs
 *.ndjson

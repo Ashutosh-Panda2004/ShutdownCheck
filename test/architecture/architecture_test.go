@@ -19,8 +19,13 @@ import (
 // purePackages must be provably free of I/O and of clock reads so that
 // Analyze(Timeline, Policy) -> Report stays a pure function. Every verdict the
 // tool produces depends on this being true; see spec sections 7.1 and 15.
+//
+// internal/timeline is guarded for a structural reason rather than a stylistic
+// one: analysis consumes it, so anything it could reach, analysis could reach
+// transitively. That is also why the clock lives in internal/clock instead.
 var purePackages = []string{
 	"internal/analyze",
+	"internal/timeline",
 	"pkg/schema",
 }
 
