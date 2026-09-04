@@ -11,6 +11,7 @@ import (
 
 	"github.com/shutdowncheck/shutdowncheck/internal/analyze"
 	"github.com/shutdowncheck/shutdowncheck/internal/clock"
+	"github.com/shutdowncheck/shutdowncheck/internal/redact"
 )
 
 // processControl is the whole platform-specific surface of this package.
@@ -49,6 +50,9 @@ type ProcessOptions struct {
 	Ready       ReadyCheck
 	GracePeriod time.Duration
 	Clock       clock.Clock
+	// AllowUnsafePID permits attaching to PID 1, which is a real target inside
+	// a container and a catastrophe on a host.
+	AllowUnsafePID bool
 }
 
 // NewCommand returns a target that spawns and owns a process group.
@@ -66,7 +70,7 @@ func NewCommand(opts CommandOptions) (Target, error) {
 	return &processTarget{
 		desc: Descriptor{
 			Kind:  analyze.TargetCommand,
-			Label: strings.Join(opts.Argv, " "),
+			Label: redact.Argv(opts.Argv),
 		},
 		control: control,
 		ready:   opts.Ready,
@@ -88,7 +92,7 @@ func logWriters(opts CommandOptions) (stdout, stderr io.Writer) {
 
 // NewProcess returns a target attached to an existing process by PID.
 func NewProcess(opts ProcessOptions) (Target, error) {
-	if err := ValidatePID(opts.PID, os.Getpid()); err != nil {
+	if err := ValidatePID(opts.PID, os.Getpid(), opts.AllowUnsafePID); err != nil {
 		return nil, err
 	}
 

@@ -5,7 +5,9 @@ import "time"
 // SchemaVersion identifies the report contract. Additive changes bump the minor
 // version; removing or repurposing a field requires a major bump and an ADR.
 // See docs/adr/0009-public-versioned-report-schema.md.
-const SchemaVersion = "1.0"
+//
+// 1.1 added probe.insecure.
+const SchemaVersion = "1.1"
 
 // WeightsVersion identifies the scoring weight table used to produce Score.
 // Publishing it means any score can be reproduced and audited later.
@@ -141,6 +143,10 @@ type Probe struct {
 	URL          string `json:"url"`
 	Method       string `json:"method"`
 	ReadinessURL string `json:"readiness_url,omitempty"`
+	// Insecure records that certificate verification was disabled. Never
+	// omitted: a reader has to be able to tell "verification was on" from
+	// "this field predates the change", and silence would read as the former.
+	Insecure bool `json:"insecure"`
 }
 
 // Load describes the traffic that was generated, including whether the rate was

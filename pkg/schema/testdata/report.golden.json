@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.0",
+  "schema_version": "1.1",
   "tool_version": "1.0.0",
   "verdict": "fail",
   "score": {
@@ -27,7 +27,8 @@
   "probe": {
     "url": "http://localhost:8080/api/orders",
     "method": "POST",
-    "readiness_url": "http://localhost:8080/readyz"
+    "readiness_url": "http://localhost:8080/readyz",
+    "insecure": false
   },
   "load": {
     "calibrated": true,

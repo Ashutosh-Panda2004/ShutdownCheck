@@ -22,6 +22,7 @@ type ProbeInfo struct {
 	URL          string
 	Method       string
 	ReadinessURL string
+	Insecure     bool
 }
 
 // LoadInfo describes the traffic that was generated.
@@ -172,6 +173,7 @@ func buildReport(
 			URL:          in.Probe.URL,
 			Method:       in.Probe.Method,
 			ReadinessURL: in.Probe.ReadinessURL,
+			Insecure:     in.Probe.Insecure,
 		},
 		Load: schema.Load{
 			Calibrated:               in.Load.Calibrated,

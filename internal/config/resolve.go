@@ -32,6 +32,10 @@ type Target struct {
 	Docker  string
 	Ready   Ready
 	Label   string
+	// AllowUnsafePID permits attaching to PID 1. Deliberately flag-only: a
+	// config file is copied between machines, and one that silently allows
+	// signalling init is a much worse thing to inherit than a long command.
+	AllowUnsafePID bool
 }
 
 // Ready describes how to detect that a spawned target has started.

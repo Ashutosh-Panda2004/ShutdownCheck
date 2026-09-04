@@ -17,6 +17,7 @@ import (
 	"github.com/shutdowncheck/shutdowncheck/internal/config"
 	"github.com/shutdowncheck/shutdowncheck/internal/load"
 	"github.com/shutdowncheck/shutdowncheck/internal/probe"
+	"github.com/shutdowncheck/shutdowncheck/internal/redact"
 	"github.com/shutdowncheck/shutdowncheck/internal/remediate"
 	"github.com/shutdowncheck/shutdowncheck/internal/report"
 	"github.com/shutdowncheck/shutdowncheck/internal/run"
@@ -32,10 +33,11 @@ type runFlags struct {
 	configPath string
 	scenario   string
 
-	pid           int
-	docker        string
-	containerPort string
-	argv          []string
+	pid            int
+	allowUnsafePID bool
+	docker         string
+	containerPort  string
+	argv           []string
 
 	url          string
 	method       string
@@ -67,6 +69,8 @@ type runFlags struct {
 	failOn          idList
 	ignore          idList
 	trials          int
+	timeout         time.Duration
+	maxRecords      int
 
 	format          string
 	output          string
@@ -125,6 +129,8 @@ func parseRunFlags(args []string, stderr io.Writer) (*runFlags, error) {
 	f.fs.Var(&f.failOn, "fail-on", "promote signatures to error severity (comma-separated or repeated)")
 	f.fs.Var(&f.ignore, "ignore", "demote signatures to informational (comma-separated or repeated)")
 	f.fs.IntVar(&f.trials, "trials", 0, "repeat the experiment this many times")
+	f.fs.DurationVar(&f.timeout, "timeout", 0, "wall-clock ceiling for the whole run (default: derived from the run's own budget)")
+	f.fs.IntVar(&f.maxRecords, "max-records", timeline.DefaultRecordLimit, "cap on recorded per-request events, so a long run cannot exhaust memory")
 
 	f.fs.StringVar(&f.format, "format", string(report.FormatHuman), "output format: human, json, junit, markdown, ndjson")
 	f.fs.StringVar(&f.output, "output", "", "also write the report to this file")
@@ -137,11 +143,11 @@ func parseRunFlags(args []string, stderr io.Writer) (*runFlags, error) {
 	f.fs.StringVar(&f.stack, "stack", "", "override framework detection for remediation advice")
 	f.fs.DurationVar(&f.observeInterval, "observe-interval", 20*time.Millisecond, "readiness and listener polling cadence")
 
-	f.fs.Usage = func() { printRunUsage(stderr) }
+	f.fs.Usage = func() { printRunUsageWithFlags(stderr, f.fs) }
 
 	if err := f.fs.Parse(args); err != nil {
 		if err == flag.ErrHelp {
-			printRunUsage(stderr)
+			printRunUsageWithFlags(stderr, f.fs)
 			return nil, &usageError{err}
 		}
 		return nil, usagef("%w", err)
@@ -152,7 +158,14 @@ func parseRunFlags(args []string, stderr io.Writer) (*runFlags, error) {
 	return f, nil
 }
 
-func printRunUsage(w io.Writer) {
+func printRunUsage(w io.Writer) { printRunUsageWithFlags(w, nil) }
+
+// printRunUsageWithFlags prints the curated guide, then every flag.
+//
+// The curated part exists because a bare alphabetical dump does not tell anyone
+// what a profile is. The full list follows it because the guide used to promise
+// "run --help to see every flag" and then print itself, which was a lie.
+func printRunUsageWithFlags(w io.Writer, fs *flag.FlagSet) {
 	fmt.Fprint(w, `Usage: shutdowncheck run [flags] [-- <command> [args...]]
 
 Terminates a target under load and reports which stage of shutdown failed.
@@ -176,10 +189,16 @@ Profiles decide what "correct" means. Under kubernetes and lame-duck a service
 must keep serving briefly after the signal, because de-registration is
 asynchronous; under strict it must stop accepting immediately. Run
 "shutdowncheck explain SC006" for why this matters.
-
-Run "shutdowncheck run --help" to see every flag.
-
 `)
+
+	if fs == nil {
+		return
+	}
+
+	fmt.Fprint(w, "\nAll flags:\n")
+	fs.SetOutput(w)
+	fs.PrintDefaults()
+	fmt.Fprintln(w)
 }
 
 func runCommand(args []string, stdout, stderr io.Writer) int {
@@ -193,12 +212,23 @@ func runCommand(args []string, stdout, stderr io.Writer) int {
 		return exitFor(err, stderr)
 	}
 
+	if !flags.quiet {
+		warnInsecure(stderr, resolved.Probe.Insecure)
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	limit := flags.timeout
+	if limit <= 0 {
+		limit = runCeiling(resolved)
+	}
+	ctx, cancel, classify := withCeiling(ctx, limit)
+	defer cancel()
+
 	result, err := executeTrials(ctx, flags, resolved, stderr)
 	if err != nil {
-		return exitFor(err, stderr)
+		return exitFor(classify(err), stderr)
 	}
 
 	if err := emit(flags, result, stdout); err != nil {
@@ -304,7 +334,7 @@ func (f *runFlags) buildFromFlags() (*config.Resolved, error) {
 	switch {
 	case len(f.argv) > 0:
 		resolved.Target = config.Target{
-			Kind: analyze.TargetCommand, Command: f.argv, Label: strings.Join(f.argv, " "),
+			Kind: analyze.TargetCommand, Command: f.argv, Label: redact.Argv(f.argv),
 		}
 	case f.docker != "":
 		resolved.Target = config.Target{
@@ -313,6 +343,7 @@ func (f *runFlags) buildFromFlags() (*config.Resolved, error) {
 	default:
 		resolved.Target = config.Target{
 			Kind: analyze.TargetProcess, PID: f.pid, Label: fmt.Sprintf("pid(%d)", f.pid),
+			AllowUnsafePID: f.allowUnsafePID,
 		}
 	}
 
@@ -494,7 +525,7 @@ func executeOnce(ctx context.Context, flags *runFlags, resolved *config.Resolved
 		Seed:        resolved.Traffic.Seed,
 		Trial:       trial,
 		Trials:      resolved.Trials,
-	}, timeline.DefaultRecordLimit)
+	}, flags.maxRecords)
 
 	origin := time.Now()
 	now := func() time.Duration { return time.Since(origin) }
@@ -577,6 +608,7 @@ func executeOnce(ctx context.Context, flags *runFlags, resolved *config.Resolved
 		Probe: analyze.ProbeInfo{
 			URL: resolved.Probe.Requests[0].URL, Method: resolved.Probe.Requests[0].Method,
 			ReadinessURL: resolved.Probe.ReadinessURL,
+			Insecure:     resolved.Probe.Insecure,
 		},
 		Load: analyze.LoadInfo{
 			Calibrated: outcome.Calibrated, RPS: outcome.Calibration.RPS,
@@ -616,6 +648,7 @@ func buildTarget(resolved *config.Resolved, recorder *timeline.Recorder, now fun
 	case analyze.TargetProcess:
 		return target.NewProcess(target.ProcessOptions{
 			PID: resolved.Target.PID, Ready: ready, GracePeriod: resolved.Termination.GracePeriod,
+			AllowUnsafePID: resolved.Target.AllowUnsafePID,
 		})
 	case analyze.TargetDocker:
 		return target.NewDocker(target.DockerOptions{

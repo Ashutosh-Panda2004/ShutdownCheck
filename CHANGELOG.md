@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- A target's command line is redacted before it is echoed into a report.
+  `./api --db-password=hunter2` is an ordinary way to start a service, and a
+  report is uploaded to CI and shared — a longer and wider exposure than the
+  process table the value came from. Secret-looking flags, environment
+  assignments and URLs carrying tokens are all covered.
+- Redaction is now proven end to end. The suite builds a recording that was
+  handed credentials by every route the tool records — the probed URL, the
+  target's argv, an error string and a captured log line — and asserts none of
+  them survive into any output format or the written file. A redaction helper
+  that is correct but never called was the failure mode that mattered, and unit
+  tests could not see it.
+- `--insecure` is recorded in the report as `probe.insecure`, never omitted, so
+  a reader can always tell "certificate verification was on" from "this report
+  predates the field". It also now prints a warning naming what the verdict does
+  and does not cover.
+- `--allow-unsafe-pid` permits attaching to PID 1, which is init on a host and
+  the service itself inside a container. It never permits signalling
+  shutdowncheck's own process: a measurement that destroys the process taking it
+  cannot produce a report.
+- A wall-clock ceiling bounds the whole run, derived from its own budget or set
+  with `--timeout`. A run that hangs forever is worse than one that fails — it
+  burns a CI runner until the job is killed and produces no report either way.
+- A fuzz target for the report renderers, where recorded evidence meets the
+  column arithmetic of the timeline visualisation. 1.9 million executions found
+  no crashes.
+
 ### Added
 
 - `shutdowncheck demo` runs a real check against a deliberately broken service
@@ -14,6 +42,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   setting anything up. It is a real process receiving a real signal, measured by
   the ordinary run pipeline: there is no code path in the tool that prints a
   report it did not measure.
+- [The seven stages of correct termination](docs/seven-stages.md): the
+  conceptual model every check maps onto, including why the usual graceful
+  shutdown advice is wrong under Kubernetes.
+- `--max-records` caps recorded per-request events so a long run cannot exhaust
+  memory.
+- Budget tests for the things spec section 19 promises: binary size, startup
+  latency, direct dependency count, and verdict stability across repeated runs.
 - Release pipeline: GoReleaser builds linux, macOS and Windows on amd64 and
   arm64, with checksums, cosign keyless signatures, an SBOM per archive and
   SLSA build provenance. A tag runs the full test suite before anything is
@@ -120,6 +155,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Report schema is now `1.1`, adding `probe.insecure`. Additive, per the policy
+  in [ADR-0009](docs/adr/0009-public-versioned-report-schema.md).
+- `run --help` lists every flag. It previously ended with "run --help to see
+  every flag" and then printed itself, which was circular; a test now fails if
+  any registered flag is missing from the help.
 - A binary from `go install` now reports its real version. There are no ldflags
   on that path, so it falls back to the module version and VCS stamp the
   toolchain embeds instead of calling itself `dev`.

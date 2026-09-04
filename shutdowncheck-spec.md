@@ -867,7 +867,7 @@ ShutdownCheck sends signals to processes and generates traffic — it must be tr
 
 **Process & command safety**
 - Subprocesses are executed via `exec.Command` with an **argv array only** — never `sh -c`, never string interpolation. Container/pod identifiers are validated against a strict allowlist regex before being passed as arguments (defence in depth against argument injection).
-- Refuse to signal PID ≤ 1, and refuse the tool's own PID or process group, unless `--allow-unsafe-pid` is passed explicitly.
+- Refuse to signal PID ≤ 1 unless `--allow-unsafe-pid` is passed explicitly, since PID 1 is init on a host and the service itself inside a container. The tool's **own** PID is refused unconditionally and the flag does not override it: a measurement that destroys the process taking it cannot produce a report, so there is no reading under which that is what was meant.
 - Managed commands run in their own process group; cleanup kills the whole group so no orphans survive a failed run.
 - `SIGKILL` is only ever delivered to a target the tool positively identified and is bounded by the grace period.
 
@@ -877,16 +877,17 @@ ShutdownCheck sends signals to processes and generates traffic — it must be tr
 - No egress other than to the configured target. No update checks, no telemetry, no analytics — ever.
 
 **Data handling**
-- `Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie`, `X-Api-Key` and any header matching a configurable secret pattern are **redacted** in all reports, logs and NDJSON output.
-- Request bodies are never echoed into reports; only a length and a hash.
+- `Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie`, `X-Api-Key` and any header matching a configurable secret pattern are **redacted** in all reports, logs and NDJSON output. Request headers and bodies are never recorded at all, which is a stronger guarantee than redacting them.
+- A target's argv is echoed back so a reader knows what was run, with secret-looking flags and environment assignments redacted (`--db-password=…`, `API_TOKEN=…`). Passing a credential on a command line is ordinary, and a report is uploaded to CI and shared — a longer and wider exposure than the process table it came from.
 - Captured target logs are size-capped (default 1MB) and scanned for the same redaction patterns.
 - Report files are written with `0600` permissions by default, since they may contain internal URLs and hostnames.
+- `--insecure` is recorded in the report as an explicit field, never omitted, so a reader can always tell "certificate verification was on" from "this report predates the field".
 
 **Resource safety**
-- Per-request records are bounded (reservoir sampling above `--max-records`, default 100k) so a long run cannot exhaust memory.
+- Per-request records are bounded by `--max-records` (default 100k). Records past the cap are **dropped, with a notice recorded on the timeline**, rather than reservoir-sampled as the v0.2 draft proposed. Sampling would silently thin the requests around the signal, which is precisely the evidence every signature depends on; a timeline that has quietly lost its in-flight requests would produce a confident and wrong verdict. Signal, process and stage events are never dropped.
 - Response bodies are read with a hard byte cap and discarded; the tool never buffers full payloads.
 - Socket count is capped by `--concurrency-cap`; the scheduler applies back-pressure rather than unbounded goroutine growth.
-- Every network and process operation is `context`-bounded; the run has a hard wall-clock ceiling after which it aborts with exit code `5`.
+- Every network and process operation is `context`-bounded, and the whole run has a wall-clock ceiling (`--timeout`, derived from the run's own budget by default). Exceeding it exits `4`, not `5` as the v0.2 draft said: the overwhelmingly likely cause is a target that never became ready or never exited, and reporting that as an internal error would send users to the issue tracker instead of to their service.
 
 **Supply chain**
 - Pinned dependencies with a committed `go.sum`; minimal dependency budget (target: fewer than 10 direct dependencies).

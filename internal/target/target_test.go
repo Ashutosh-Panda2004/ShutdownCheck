@@ -32,7 +32,7 @@ func TestValidatePID(t *testing.T) {
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			err := ValidatePID(tc.pid, self)
+			err := ValidatePID(tc.pid, self, false)
 			if tc.wantErr != (err != nil) {
 				t.Fatalf("ValidatePID(%d) error = %v, wantErr %v", tc.pid, err, tc.wantErr)
 			}
@@ -44,6 +44,37 @@ func TestValidatePID(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// PID 1 is init on a host and the service itself inside a container, so the
+// refusal has to be overridable. Signalling shutdowncheck is never coherent:
+// the measurement would destroy the process taking it, so there is no reading
+// under which that is what someone meant.
+func TestAllowUnsafePIDPermitsInitButNeverSelf(t *testing.T) {
+	self := os.Getpid()
+
+	if err := ValidatePID(1, self, true); err != nil {
+		t.Errorf("PID 1 should be allowed with the opt-in: %v", err)
+	}
+	if err := ValidatePID(self, self, true); err == nil {
+		t.Error("the opt-in must not permit signalling shutdowncheck itself")
+	}
+	for _, pid := range []int{0, -1} {
+		if err := ValidatePID(pid, self, true); err == nil {
+			t.Errorf("PID %d is not a process id and the opt-in must not permit it", pid)
+		}
+	}
+}
+
+// The refusal has to name the way out, or it is just an obstacle.
+func TestInitRefusalNamesTheOptIn(t *testing.T) {
+	err := ValidatePID(1, os.Getpid(), false)
+	if err == nil {
+		t.Fatal("PID 1 should be refused by default")
+	}
+	if !strings.Contains(err.Error(), "--allow-unsafe-pid") {
+		t.Errorf("the refusal should name the flag that permits it: %v", err)
 	}
 }
 

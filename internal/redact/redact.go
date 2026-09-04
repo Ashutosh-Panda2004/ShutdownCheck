@@ -51,6 +51,69 @@ func IsSensitiveHeader(name string) bool {
 	return sensitiveHeaders[strings.ToLower(strings.TrimSpace(name))]
 }
 
+// sensitiveWords mark a flag or variable whose value must not be recorded.
+// Matched as substrings, so --db-password and DATABASE_TOKEN are both caught.
+var sensitiveWords = []string{
+	"apikey", "api-key", "api_key",
+	"auth", "credential", "passwd", "password",
+	"private", "pwd", "secret", "token",
+}
+
+func isSensitiveName(name string) bool {
+	lower := strings.ToLower(strings.TrimLeft(name, "-"))
+	for _, word := range sensitiveWords {
+		if strings.Contains(lower, word) {
+			return true
+		}
+	}
+	return false
+}
+
+// Argv renders a command line with secret-looking values removed.
+//
+// A target's argv is echoed back in the report so a reader knows what was run,
+// and `./api --db-password=hunter2` is an ordinary way to start a service. The
+// report is an artefact that gets uploaded to CI and shared, which is a longer
+// and wider exposure than the process table it came from.
+func Argv(argv []string) string {
+	out := make([]string, 0, len(argv))
+	redactNext := false
+
+	for _, arg := range argv {
+		switch {
+		case redactNext:
+			out = append(out, Placeholder)
+			redactNext = false
+
+		// --flag=value and KEY=value both hide the secret after the first '='.
+		case strings.Contains(arg, "="):
+			name, value, _ := strings.Cut(arg, "=")
+			switch {
+			case isSensitiveName(name):
+				out = append(out, name+"="+Placeholder)
+			// An innocuous flag name can still carry a URL with a token in its
+			// query string, which is the leak this would otherwise miss.
+			case looksLikeURL(value):
+				out = append(out, name+"="+URL(value))
+			default:
+				out = append(out, arg)
+			}
+
+		// A bare --password takes its value as the next argument.
+		case strings.HasPrefix(arg, "-") && isSensitiveName(arg):
+			out = append(out, arg)
+			redactNext = true
+
+		case looksLikeURL(arg):
+			out = append(out, URL(arg))
+
+		default:
+			out = append(out, arg)
+		}
+	}
+	return strings.Join(out, " ")
+}
+
 // Headers returns a copy with sensitive values replaced.
 func Headers(h http.Header) http.Header {
 	if h == nil {

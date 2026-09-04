@@ -262,19 +262,37 @@ Phases 2 and 4 are independent of each other and can be reordered or interleaved
 
 ---
 
-## Phase 9 — Hardening & v1.0 Launch
+## Phase 9 — Hardening (v1.0 launch still pending) ⚠️
 
 **Size:** M · **Goal:** Ship something people can reasonably bet a merge gate on.
 
-**Deliverables**
-- Fuzz suites (config, NDJSON, JSON report), soak suite, and the 50× flakiness suite wired into CI.
-- Full security self-review against spec §14; `gosec`, `govulncheck`, CodeQL clean; redaction verified by test against a report containing an `Authorization` header.
-- Performance pass: binary < 15MB, bounded memory at 100k records, sub-50ms startup.
-- Documentation audit: every flag documented, every signature page written, "seven stages of correct termination" explainer published as the conceptual anchor.
-- `CHANGELOG.md`, semantic versioning, `v1.0.0` tag.
-- Launch: Hacker News, r/devops, r/kubernetes, Go Weekly, CNCF Slack — led with the demo GIF and the seven-stages explainer rather than the feature list.
+**Delivered**
+- Fuzz suites for the config parser, the NDJSON timeline parser and the report renderers, all wired into CI with crashers uploaded on failure. The renderer target is the interesting one: it is where arbitrary recorded evidence meets the column arithmetic of the timeline visualisation. 1.9M executions, no crashes.
+- Security self-review against spec §14, which found four real gaps and closed them: argv secrets reaching reports, `--insecure` neither warned about nor recorded, no wall-clock ceiling, and no `--allow-unsafe-pid`.
+- Redaction proven end to end, against a recording deliberately handed credentials by every route the tool records. Unit tests could not have caught the failure that mattered — a redaction helper that is correct but never called.
+- Budget tests: binary size, startup latency, direct dependency count, and verdict stability across repeated runs, with the fifty-iteration version behind `-stability` and run on main.
+- Documentation: [the seven stages explainer](docs/seven-stages.md), all eighteen signature pages generated from the catalogue, and a test that fails if any registered flag is missing from `--help`.
 
-**Exit criteria:** every technical success criterion in spec §19 is objectively met and demonstrable.
+**Measured against spec §19**
+| Criterion | Budget | Actual |
+|---|---|---|
+| Binary size | < 15 MB | **7.76 MB** |
+| Direct dependencies | < 10 | **1** |
+| Every signature in ≥ 2 languages | required | enforced by a build-failing guard |
+| Zero false PASS | required | asserted for every conformance mode |
+| Verdict stability | 50 runs | enforced on main; 6 runs per PR |
+| `go test -race`, staticcheck, gosec, govulncheck | clean | in CI |
+
+**Deviations from plan**
+- Two spec claims were corrected rather than implemented. Record capping **drops** with a recorded notice instead of reservoir sampling, because sampling would silently thin the requests around the signal — precisely the evidence every signature depends on. And the wall-clock ceiling exits `4`, not `5`: the likely cause is a target that never became ready, and reporting that as an internal error would send users to the issue tracker instead of to their own service.
+- The "sub-50ms startup" target is asserted at 200ms median. A Go binary starts in roughly 10ms, but the budget exists to catch expensive package initialisation, not to police the scheduling noise of a shared CI runner.
+- Report schema bumped to `1.1` for the additive `probe.insecure` field, per [ADR-0009](docs/adr/0009-public-versioned-report-schema.md).
+
+**Not done — this is why the phase is not closed**
+- `v1.0.0` is **not** tagged. The release pipeline, install script, container image and GitHub Action have never been executed; they carry over from Phase 8 and are still written-but-unproven. Tagging a release whose publishing machinery has never run once would be exactly the kind of unearned confidence this project exists to argue against.
+- Launch posts are deliberately not written until a release exists that someone can actually install.
+
+**To close Phase 9:** push to a real repository, let CI run every job, cut a `v0.9.0` pre-release to exercise the pipeline end to end, verify `brew`/`install.sh`/`go install`/the image on a clean machine, prove the Action in a throwaway repo — then tag `v1.0.0`.
 
 ---
 

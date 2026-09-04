@@ -90,6 +90,14 @@ jobs:
       - name: Conformance and end-to-end suites
         run: go test -race -timeout 20m ./test/...
 
+      # Fifty repeated runs of the same fixture, per spec section 19. Only on
+      # main: it terminates real processes fifty times and is too slow to put in
+      # front of every pull request, but a verdict that is only usually stable
+      # is not one anybody can gate a merge on.
+      - name: Verdict stability
+        if: github.ref == 'refs/heads/main' && matrix.os == 'ubuntu-latest'
+        run: go test ./test/e2e -run TestVerdictIsStableAcrossRepeatedRuns -stability -timeout 30m -v
+
   coverage:
     name: coverage
     runs-on: ubuntu-latest
@@ -177,6 +185,37 @@ jobs:
 
       - name: Run govulncheck
         run: govulncheck ./...
+
+  # Fuzzing finds the inputs nobody thought to write a test for. A short run on
+  # every push keeps the committed corpus honest; the crashers it finds are
+  # committed under testdata/fuzz and become ordinary regression tests.
+  fuzz:
+    name: fuzz
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      - name: Config parser
+        run: go test ./internal/config -run=XXX -fuzz=FuzzParse -fuzztime=60s
+
+      - name: NDJSON timeline parser
+        run: go test ./internal/timeline -run=XXX -fuzz=FuzzReadNDJSON -fuzztime=60s
+
+      - name: Report renderers
+        run: go test ./internal/report -run=XXX -fuzz=FuzzRenderEveryFormat -fuzztime=60s
+
+      - name: Upload any crashers
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crashers
+          path: |
+            internal/**/testdata/fuzz/**
+          retention-days: 30
 
   gosec:
     name: gosec

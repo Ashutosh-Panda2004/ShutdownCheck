@@ -132,14 +132,21 @@ func (e *UnsafeTargetError) Error() string { return "refusing to target: " + e.R
 // This tool's whole job is to send real signals, including SIGKILL, so the
 // guard rails matter: signalling PID 1 would take down the host or container,
 // and signalling ourselves would kill the run mid-measurement.
-func ValidatePID(pid, selfPID int) error {
+//
+// allowUnsafe permits PID 1, which is a real target inside a container where
+// the service under test genuinely is init. It never permits signalling
+// shutdowncheck itself: a measurement that destroys the process taking it
+// cannot produce a report, so there is no reading under which that is what the
+// user meant.
+func ValidatePID(pid, selfPID int, allowUnsafe bool) error {
 	switch {
 	case pid <= 0:
 		return &UnsafeTargetError{Reason: fmt.Sprintf("PID %d is not a valid process id", pid)}
-	case pid == 1:
-		return &UnsafeTargetError{Reason: "PID 1 is the init process; signalling it would terminate the host or container"}
 	case pid == selfPID:
-		return &UnsafeTargetError{Reason: "that PID is shutdowncheck itself"}
+		return &UnsafeTargetError{Reason: "that PID is shutdowncheck itself, which cannot report on its own termination"}
+	case pid == 1 && !allowUnsafe:
+		return &UnsafeTargetError{Reason: "PID 1 is the init process; signalling it would terminate the host or container. " +
+			"Pass --allow-unsafe-pid if the target really is PID 1 inside a container"}
 	default:
 		return nil
 	}

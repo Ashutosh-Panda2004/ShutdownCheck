@@ -39,6 +39,9 @@ Every check maps to exactly one stage, and every diagnosis names the stage that 
 | S6 | In-flight work drained | Every active request completes |
 | S7 | Clean exit inside budget | Exit before the grace period expires, no orphans |
 
+The full explanation, including why the usual advice is wrong under Kubernetes,
+is in [docs/seven-stages.md](docs/seven-stages.md).
+
 ## What it will look like
 
 ```console

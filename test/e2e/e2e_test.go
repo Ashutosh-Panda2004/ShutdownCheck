@@ -31,6 +31,11 @@ var serverBinary string
 // test that would point at the test binary and prove nothing about what ships.
 var toolBinary string
 
+// stability raises the repeat count to the fifty runs spec section 19 asks for.
+// Off by default because each run terminates a real process, and fifty of them
+// is a minute nobody wants on every pull request.
+var stability = flag.Bool("stability", false, "run the full fifty-iteration verdict stability check")
+
 func TestMain(m *testing.M) {
 	// testing.Short is only readable once flags are parsed, and TestMain runs
 	// before the testing package does that itself.
