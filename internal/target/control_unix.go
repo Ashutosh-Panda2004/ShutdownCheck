@@ -15,6 +15,10 @@ import (
 
 const attachPollInterval = 10 * time.Millisecond
 
+// ProcessTargetsSupported reports whether this platform can deliver the signals
+// a process or command target needs.
+func ProcessTargetsSupported() bool { return true }
+
 func osSignal(s Signal) (syscall.Signal, error) {
 	switch s {
 	case SIGTERM:

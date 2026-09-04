@@ -193,3 +193,42 @@ jobs:
 
       - name: Run gosec
         run: gosec -exclude-dir=test/conformance ./...
+
+  # The release config is only exercised when a tag is pushed, which is the
+  # worst possible moment to discover it is wrong. A snapshot build here means a
+  # broken release pipeline fails on the pull request that broke it.
+  release-config:
+    name: release config
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      - name: Validate .goreleaser.yaml
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          version: '~> v2'
+          args: check
+
+      - name: Snapshot build for every target platform
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          version: '~> v2'
+          # Docker images and signing need a registry and an OIDC token, so the
+          # snapshot stops at binaries and archives.
+          args: build --snapshot --clean
+
+      - name: Confirm the built binary reports its version
+        run: |
+          binary=$(find dist -type f -name shutdowncheck -perm -u+x | head -n 1)
+          if [ -z "$binary" ]; then
+            echo "no linux binary was produced"
+            exit 1
+          fi
+          "$binary" version

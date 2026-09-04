@@ -56,6 +56,10 @@ func Main(args []string, stdout, stderr io.Writer) int {
 		return runCommand(rest, stdout, stderr)
 	case "analyze", "analyse":
 		return analyzeCommand(rest, stdout, stderr)
+	case "demo":
+		return demoCommand(rest, stdout, stderr)
+	case demoServerCommand:
+		return demoServer(rest, stderr)
 	case "explain":
 		err = explainCommand(rest, stdout)
 	case "validate":
@@ -103,6 +107,7 @@ func printUsage(w io.Writer) {
 Usage:
   shutdowncheck run [flags] [-- <command> [args...]]
   shutdowncheck analyze <run.ndjson> [flags]
+  shutdowncheck demo [flags]
   shutdowncheck explain [SIGNATURE]
   shutdowncheck validate [--config <path>]
   shutdowncheck version
@@ -110,10 +115,12 @@ Usage:
 Commands:
   run        Terminate a target under load and report what broke
   analyze    Re-judge a recorded run, optionally under a different profile
+  demo       Run a real check against a deliberately broken service
   explain    Describe a failure signature and how to fix it
   validate   Check a shutdowncheck.yaml without running anything
   version    Print build information
 
+New here? Run "shutdowncheck demo" to see what a report looks like.
 Run "shutdowncheck run --help" for the full list of run flags.
 
 Exit codes:

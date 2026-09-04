@@ -26,6 +26,11 @@ import (
 
 var serverBinary string
 
+// toolBinary is the real shutdowncheck executable. The demo re-executes
+// os.Executable, so it can only be exercised through a genuine build; inside a
+// test that would point at the test binary and prove nothing about what ships.
+var toolBinary string
+
 func TestMain(m *testing.M) {
 	// testing.Short is only readable once flags are parsed, and TestMain runs
 	// before the testing package does that itself.
@@ -44,12 +49,19 @@ func TestMain(m *testing.M) {
 	// The conformance server is the single fixture for the whole project; a
 	// second copy here would be one more thing to keep in step.
 	serverBinary = filepath.Join(dir, "server")
-	build := exec.Command("go", "build", "-o", serverBinary, "../conformance/go")
-	build.Stderr = os.Stderr
-	if err := build.Run(); err != nil {
-		fmt.Fprintln(os.Stderr, "build conformance server:", err)
-		_ = os.RemoveAll(dir)
-		os.Exit(1)
+	toolBinary = filepath.Join(dir, "shutdowncheck")
+
+	for _, build := range []struct{ out, pkg string }{
+		{serverBinary, "../conformance/go"},
+		{toolBinary, "../../cmd/shutdowncheck"},
+	} {
+		cmd := exec.Command("go", "build", "-o", build.out, build.pkg)
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			fmt.Fprintf(os.Stderr, "build %s: %v\n", build.pkg, err)
+			_ = os.RemoveAll(dir)
+			os.Exit(1)
+		}
 	}
 
 	code := m.Run()

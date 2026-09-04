@@ -12,7 +12,7 @@ LDFLAGS := -s -w \
 	-X main.commit=$(COMMIT) \
 	-X main.date=$(DATE)
 
-.PHONY: help build test race cover lint vet fmt tidy vuln fuzz ci clean
+.PHONY: help build test race cover lint vet fmt tidy vuln fuzz docs snapshot release-check ci clean
 
 help: ## Show available targets
 	@grep -hE '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  %-8s %s\n", $$1, $$2}'
@@ -59,7 +59,21 @@ fuzz: ## Run each fuzz target for FUZZTIME (default 30s)
 	$(GO) test ./internal/timeline -run=XXX -fuzz=FuzzReadNDJSON -fuzztime=$(FUZZTIME)
 	$(GO) test ./internal/config -run=XXX -fuzz=FuzzParse -fuzztime=$(FUZZTIME)
 
+docs: ## Regenerate the published signature pages from the catalogue
+	$(GO) test ./internal/remediate -update
+	@git diff --quiet -- docs/signatures || echo "docs/signatures updated; commit the result"
+
+release-check: ## Validate .goreleaser.yaml
+	@command -v goreleaser >/dev/null 2>&1 \
+		|| { echo "goreleaser not installed: https://goreleaser.com/install"; exit 1; }
+	goreleaser check
+
+snapshot: ## Build release artefacts locally without publishing anything
+	@command -v goreleaser >/dev/null 2>&1 \
+		|| { echo "goreleaser not installed: https://goreleaser.com/install"; exit 1; }
+	goreleaser build --snapshot --clean
+
 ci: lint test race cover ## Everything CI runs
 
 clean: ## Remove build artefacts
-	rm -rf bin coverage.out
+	rm -rf bin dist coverage.out

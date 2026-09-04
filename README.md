@@ -5,8 +5,8 @@
 > the same shutdown defects are verified in Go, Node.js and Python. On Windows,
 > use the Docker target: the platform has no `SIGTERM`, and simulating one
 > would produce a verdict about a signal that was never delivered. Kubernetes
-> targeting and published binaries are still to come — see
-> [DEVELOPMENT-PLAN.md](DEVELOPMENT-PLAN.md).
+> targeting is still to come, and the install methods below describe a release
+> that has not been tagged yet — see [DEVELOPMENT-PLAN.md](DEVELOPMENT-PLAN.md).
 > Not yet recommended as a merge gate you depend on.
 
 **ShutdownCheck terminates your service the way your orchestrator will — under real load — and tells you exactly which stage of shutdown you got wrong, and how to fix it in your framework.**
@@ -78,6 +78,56 @@ $ shutdowncheck run --docker my-api --url /api/orders --readiness-url /readyz
 ```
 
 Full sample output is in [spec section 3.3](shutdowncheck-spec.md).
+
+## Install
+
+| Method | Command |
+| --- | --- |
+| Script | `curl -fsSL https://raw.githubusercontent.com/shutdowncheck/shutdowncheck/main/install.sh \| sh` |
+| Homebrew | `brew install shutdowncheck/tap/shutdowncheck` |
+| Scoop | `scoop bucket add shutdowncheck https://github.com/shutdowncheck/scoop-bucket && scoop install shutdowncheck` |
+| Go | `go install github.com/shutdowncheck/shutdowncheck/cmd/shutdowncheck@latest` |
+| Docker | `docker run --rm ghcr.io/shutdowncheck/shutdowncheck:latest version` |
+| Binaries | [Releases](https://github.com/shutdowncheck/shutdowncheck/releases) — linux, macOS and Windows on amd64 and arm64 |
+
+Then see what a report looks like, with nothing of your own to set up:
+
+```console
+$ shutdowncheck demo
+```
+
+The demo is a real check against a real process receiving a real `SIGTERM`. No
+part of this tool ever prints a report it did not measure.
+
+### Verifying a download
+
+Every release is signed with [cosign](https://docs.sigstore.dev) keyless
+signing, ships an SBOM, and carries SLSA build provenance.
+
+```sh
+cosign verify-blob checksums.txt \
+  --certificate checksums.txt.pem \
+  --signature checksums.txt.sig \
+  --certificate-identity-regexp 'https://github\.com/shutdowncheck/shutdowncheck/\.github/workflows/.+' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+The install script does the checksum half of this automatically and refuses to
+install anything that does not match.
+
+## In CI
+
+```yaml
+- uses: shutdowncheck/shutdowncheck@v1
+  with:
+    url: http://localhost:8080/api/orders
+    readiness-url: http://localhost:8080/readyz
+    command: ./bin/my-server --port 8080
+```
+
+The step fails when a defect is found, writes the report to the job summary, and
+uploads the JSON. See [action/](action/) for every input, including reporting
+without gating while you work through what it finds.
 
 ## Design commitments
 

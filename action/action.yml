@@ -1,0 +1,229 @@
+name: ShutdownCheck
+description: Verify that your service drains in-flight requests correctly when it is terminated
+author: shutdowncheck
+
+branding:
+  icon: check-circle
+  color: purple
+
+inputs:
+  version:
+    description: Version of shutdowncheck to use, e.g. v1.2.3
+    required: false
+    default: latest
+  url:
+    description: URL to send load to during the check
+    required: false
+  readiness-url:
+    description: Readiness endpoint, so SC007 and SC008 can be evaluated
+    required: false
+  command:
+    description: Command to start and terminate, as it would follow `--` on the CLI
+    required: false
+  docker:
+    description: Name or id of a running container to target instead of a command
+    required: false
+  config:
+    description: Path to a shutdowncheck.yaml
+    required: false
+  scenario:
+    description: Scenario from the config file to run
+    required: false
+  profile:
+    description: Shutdown profile: auto, standalone, strict, lame-duck, kubernetes, docker
+    required: false
+    default: kubernetes
+  grace-period:
+    description: How long to allow before escalating to SIGKILL
+    required: false
+  trials:
+    description: Number of trials; the worst result across them is the verdict
+    required: false
+    default: '1'
+  args:
+    description: Extra flags passed through to `shutdowncheck run` verbatim
+    required: false
+  fail-on-error:
+    description: Fail the step when a defect is found. Set false to report without gating.
+    required: false
+    default: 'true'
+  comment-on-pr:
+    description: Post or update a single sticky comment on the pull request
+    required: false
+    default: 'false'
+  upload-artifact:
+    description: Upload the JSON report as a workflow artifact
+    required: false
+    default: 'true'
+  artifact-name:
+    description: Name of the uploaded artifact
+    required: false
+    default: shutdowncheck-report
+
+outputs:
+  verdict:
+    description: PASS, FAIL or INCONCLUSIVE
+    value: ${{ steps.check.outputs.verdict }}
+  score:
+    description: Shutdown score from 0 to 100
+    value: ${{ steps.check.outputs.score }}
+  exit-code:
+    description: The tool's exit code, per its documented taxonomy
+    value: ${{ steps.check.outputs.exit-code }}
+  report-path:
+    description: Path to the JSON report on the runner
+    value: ${{ steps.check.outputs.report-path }}
+  report-written:
+    description: Whether a report was produced. False means the run never happened.
+    value: ${{ steps.check.outputs.report-written }}
+
+runs:
+  using: composite
+  steps:
+    # Composite rather than a container action so every step is readable here,
+    # and so the action adds no image to the supply chain of anyone using it.
+    - name: Install shutdowncheck
+      shell: bash
+      env:
+        SHUTDOWNCHECK_VERSION: ${{ inputs.version }}
+        SHUTDOWNCHECK_BIN_DIR: ${{ runner.temp }}/shutdowncheck-bin
+      run: |
+        set -euo pipefail
+        curl -fsSL "https://raw.githubusercontent.com/shutdowncheck/shutdowncheck/${{ inputs.version == 'latest' && 'main' || inputs.version }}/install.sh" | sh
+        echo "${{ runner.temp }}/shutdowncheck-bin" >> "$GITHUB_PATH"
+
+    - name: Run shutdowncheck
+      id: check
+      shell: bash
+      env:
+        IN_URL: ${{ inputs.url }}
+        IN_READINESS_URL: ${{ inputs.readiness-url }}
+        IN_COMMAND: ${{ inputs.command }}
+        IN_DOCKER: ${{ inputs.docker }}
+        IN_CONFIG: ${{ inputs.config }}
+        IN_SCENARIO: ${{ inputs.scenario }}
+        IN_PROFILE: ${{ inputs.profile }}
+        IN_GRACE: ${{ inputs.grace-period }}
+        IN_TRIALS: ${{ inputs.trials }}
+        IN_ARGS: ${{ inputs.args }}
+      run: |
+        set -uo pipefail
+
+        recording="${RUNNER_TEMP}/shutdowncheck-run.ndjson"
+        report="${RUNNER_TEMP}/shutdowncheck-report.json"
+        summary="${RUNNER_TEMP}/shutdowncheck-summary.md"
+
+        # Recorded once as NDJSON, then rendered as many times as needed. The
+        # service is only terminated once, and every artefact below describes
+        # that same measurement rather than a fresh one.
+        args=(run --format ndjson --output "$recording" --no-color)
+
+        add_flag() { if [ -n "$2" ]; then args+=("$1" "$2"); fi; }
+        add_flag --url            "$IN_URL"
+        add_flag --readiness-url  "$IN_READINESS_URL"
+        add_flag --docker         "$IN_DOCKER"
+        add_flag --config         "$IN_CONFIG"
+        add_flag --scenario       "$IN_SCENARIO"
+        add_flag --profile        "$IN_PROFILE"
+        add_flag --grace-period   "$IN_GRACE"
+        add_flag --trials         "$IN_TRIALS"
+
+        # Word-split deliberately: these are additional flags, not one argument.
+        if [ -n "$IN_ARGS" ]; then
+          read -r -a extra <<< "$IN_ARGS"
+          args+=("${extra[@]}")
+        fi
+        if [ -n "$IN_COMMAND" ]; then
+          read -r -a cmd <<< "$IN_COMMAND"
+          args+=(-- "${cmd[@]}")
+        fi
+
+        shutdowncheck "${args[@]}" > /dev/null
+        code=$?
+        {
+          echo "exit-code=$code"
+          echo "report-path=$report"
+        } >> "$GITHUB_OUTPUT"
+
+        # Exit codes 3, 4 and 5 mean the tool never ran the experiment. There is
+        # nothing to summarise, and emitting a verdict here would be reporting
+        # one that nobody measured.
+        if [ ! -s "$recording" ]; then
+          {
+            echo "verdict=INCONCLUSIVE"
+            echo "score="
+            echo "report-written=false"
+          } >> "$GITHUB_OUTPUT"
+          echo "::error::shutdowncheck could not complete the run (exit $code)"
+          exit "$code"
+        fi
+
+        shutdowncheck analyze "$recording" --format json --no-color > "$report"
+        shutdowncheck analyze "$recording" --format markdown --no-color > "$summary"
+
+        verdict=$(jq -r '.verdict // "UNKNOWN"' "$report")
+        score=$(jq -r '.score.value // empty' "$report")
+        {
+          echo "verdict=$verdict"
+          echo "score=$score"
+          echo "report-written=true"
+        } >> "$GITHUB_OUTPUT"
+
+        cat "$summary" >> "$GITHUB_STEP_SUMMARY"
+        exit "$code"
+      continue-on-error: true
+
+    - name: Upload the report
+      # Gated on an explicit output rather than hashFiles, which only resolves
+      # paths under the workspace and would silently never match here.
+      if: inputs.upload-artifact == 'true' && steps.check.outputs.report-written == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: ${{ runner.temp }}/shutdowncheck-report.json
+        retention-days: 30
+
+    - name: Comment on the pull request
+      if: inputs.comment-on-pr == 'true' && github.event_name == 'pull_request' && steps.check.outputs.report-written == 'true'
+      uses: actions/github-script@v7
+      env:
+        VERDICT: ${{ steps.check.outputs.verdict }}
+        SCORE: ${{ steps.check.outputs.score }}
+      with:
+        script: |
+          const fs = require('fs');
+          const path = `${process.env.RUNNER_TEMP}/shutdowncheck-summary.md`;
+          const body = fs.existsSync(path) ? fs.readFileSync(path, 'utf8') : 'ShutdownCheck produced no report.';
+
+          // A marker so repeated runs update one comment instead of burying the
+          // pull request in a new one per push.
+          const marker = '<!-- shutdowncheck-report -->';
+          const content = `${marker}\n${body}`;
+
+          const { owner, repo } = context.repo;
+          const issue_number = context.issue.number;
+
+          const existing = await github.rest.issues.listComments({ owner, repo, issue_number });
+          const previous = existing.data.find(c => c.body && c.body.includes(marker));
+
+          if (previous) {
+            await github.rest.issues.updateComment({ owner, repo, comment_id: previous.id, body: content });
+          } else {
+            await github.rest.issues.createComment({ owner, repo, issue_number, body: content });
+          }
+
+    - name: Apply the result
+      shell: bash
+      env:
+        CODE: ${{ steps.check.outputs.exit-code }}
+        VERDICT: ${{ steps.check.outputs.verdict }}
+        FAIL_ON_ERROR: ${{ inputs.fail-on-error }}
+      run: |
+        set -euo pipefail
+        echo "verdict: ${VERDICT:-unknown} (exit ${CODE:-unknown})"
+
+        if [ "$FAIL_ON_ERROR" != "true" ]; then
+          echo "fail-on-error is false, so the result is reported but not gated"
+          exit 0
+        fi
+        exit "${CODE:-1}"

@@ -5,6 +5,7 @@
 *.test
 
 # Coverage & profiling
+coverage
 coverage.out
 coverage.html
 *.prof

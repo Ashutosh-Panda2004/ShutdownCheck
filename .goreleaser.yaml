@@ -1,0 +1,196 @@
+# Release build. Validated in CI by `goreleaser check`.
+#
+# See docs/adr/0006-project-name-and-module-path.md for the module path and
+# docs/adr/0010-no-telemetry.md for why nothing here phones home.
+version: 2
+
+project_name: shutdowncheck
+
+before:
+  hooks:
+    - go mod tidy
+    - go mod verify
+
+builds:
+  - id: shutdowncheck
+    main: ./cmd/shutdowncheck
+    binary: shutdowncheck
+    # A verification tool that people run next to production should be a single
+    # static binary with no runtime linkage to worry about.
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      # Strips local paths out of the binary, so builds are reproducible and no
+      # build-machine directory structure leaks into a shipped artefact.
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X main.version={{ .Version }}
+      - -X main.commit={{ .FullCommit }}
+      - -X main.date={{ .CommitDate }}
+    # Build from the commit timestamp rather than "now", so the same tag always
+    # produces the same bytes.
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: default
+    ids:
+      - shutdowncheck
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    files:
+      - README.md
+      - LICENSE
+      - CHANGELOG.md
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+# Software bill of materials per archive. Someone running this in a regulated
+# environment needs to answer "what is in it" without unpacking the binary.
+sboms:
+  - artifacts: archive
+
+# Keyless signing through Sigstore: no long-lived private key to leak, and the
+# signature is publicly auditable in the transparency log.
+signs:
+  - cmd: cosign
+    certificate: "${artifact}.pem"
+    args:
+      - sign-blob
+      - "--output-certificate=${certificate}"
+      - "--output-signature=${signature}"
+      - "${artifact}"
+      - "--yes"
+    artifacts: checksum
+    output: true
+
+dockers:
+  - id: linux-amd64
+    ids:
+      - shutdowncheck
+    goos: linux
+    goarch: amd64
+    dockerfile: Dockerfile
+    use: buildx
+    image_templates:
+      - "ghcr.io/shutdowncheck/shutdowncheck:{{ .Version }}-amd64"
+      - "ghcr.io/shutdowncheck/shutdowncheck:latest-amd64"
+    build_flag_templates:
+      - "--platform=linux/amd64"
+      - "--label=org.opencontainers.image.title={{ .ProjectName }}"
+      - "--label=org.opencontainers.image.description=Verify that your service drains correctly when terminated"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+      - "--label=org.opencontainers.image.created={{ .CommitDate }}"
+      - "--label=org.opencontainers.image.source=https://github.com/shutdowncheck/shutdowncheck"
+      - "--label=org.opencontainers.image.licenses=Apache-2.0"
+
+  - id: linux-arm64
+    ids:
+      - shutdowncheck
+    goos: linux
+    goarch: arm64
+    dockerfile: Dockerfile
+    use: buildx
+    image_templates:
+      - "ghcr.io/shutdowncheck/shutdowncheck:{{ .Version }}-arm64"
+      - "ghcr.io/shutdowncheck/shutdowncheck:latest-arm64"
+    build_flag_templates:
+      - "--platform=linux/arm64"
+      - "--label=org.opencontainers.image.title={{ .ProjectName }}"
+      - "--label=org.opencontainers.image.description=Verify that your service drains correctly when terminated"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+      - "--label=org.opencontainers.image.created={{ .CommitDate }}"
+      - "--label=org.opencontainers.image.source=https://github.com/shutdowncheck/shutdowncheck"
+      - "--label=org.opencontainers.image.licenses=Apache-2.0"
+
+docker_manifests:
+  - name_template: "ghcr.io/shutdowncheck/shutdowncheck:{{ .Version }}"
+    image_templates:
+      - "ghcr.io/shutdowncheck/shutdowncheck:{{ .Version }}-amd64"
+      - "ghcr.io/shutdowncheck/shutdowncheck:{{ .Version }}-arm64"
+  - name_template: "ghcr.io/shutdowncheck/shutdowncheck:latest"
+    image_templates:
+      - "ghcr.io/shutdowncheck/shutdowncheck:latest-amd64"
+      - "ghcr.io/shutdowncheck/shutdowncheck:latest-arm64"
+
+brews:
+  - name: shutdowncheck
+    ids:
+      - default
+    repository:
+      owner: shutdowncheck
+      name: homebrew-tap
+      token: "{{ .Env.TAP_GITHUB_TOKEN }}"
+    homepage: https://github.com/shutdowncheck/shutdowncheck
+    description: Verify that your service drains in-flight requests when terminated
+    license: Apache-2.0
+    test: |
+      system "#{bin}/shutdowncheck", "version"
+
+scoops:
+  - name: shutdowncheck
+    ids:
+      - default
+    repository:
+      owner: shutdowncheck
+      name: scoop-bucket
+      token: "{{ .Env.TAP_GITHUB_TOKEN }}"
+    homepage: https://github.com/shutdowncheck/shutdowncheck
+    description: Verify that your service drains in-flight requests when terminated
+    license: Apache-2.0
+
+changelog:
+  # The curated CHANGELOG.md is the story; this is the raw log, filtered so the
+  # release notes are not mostly CI churn.
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - "^ci:"
+      - "merge conflict"
+      - Merge pull request
+      - Merge branch
+
+release:
+  draft: false
+  prerelease: auto
+  footer: |
+    ## Verifying this release
+
+    Every artefact is signed with [cosign](https://docs.sigstore.dev) keyless signing.
+
+    ```sh
+    cosign verify-blob checksums.txt \
+      --certificate checksums.txt.pem \
+      --signature checksums.txt.sig \
+      --certificate-identity-regexp 'https://github\.com/shutdowncheck/shutdowncheck/\.github/workflows/.+' \
+      --certificate-oidc-issuer https://token.actions.githubusercontent.com
+    ```
+
+    Then check your download against it:
+
+    ```sh
+    sha256sum --check --ignore-missing checksums.txt
+    ```
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"

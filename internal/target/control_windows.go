@@ -20,6 +20,10 @@ const windowsGuidance = "process and command targets need POSIX signals, which W
 	"Use --docker to test the container you actually deploy, or run shutdowncheck on Linux or macOS. " +
 	"Native Windows termination is planned for v1.2"
 
+// ProcessTargetsSupported reports whether this platform can deliver the signals
+// a process or command target needs.
+func ProcessTargetsSupported() bool { return false }
+
 func newCommandControl(CommandOptions, io.Writer, io.Writer) (processControl, error) {
 	return nil, fmt.Errorf("%w: %s", ErrUnsupportedPlatform, windowsGuidance)
 }

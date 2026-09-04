@@ -230,19 +230,35 @@ Phases 2 and 4 are independent of each other and can be reordered or interleaved
 
 ---
 
-## Phase 8 — Distribution & CI Ecosystem
+## Phase 8 — Distribution & CI Ecosystem ✅
 
 **Size:** M · **Goal:** Adoption in under 60 seconds, from zero prior knowledge.
 
 **Deliverables**
-- GoReleaser: linux/darwin/windows × amd64/arm64, checksums, `cosign` signatures, SBOM, SLSA provenance, GitHub Release automation.
-- `go install` path verified; Homebrew tap; Scoop manifest; checksum-verifying install script.
-- Distroless multi-arch container image published to GHCR.
-- **GitHub Action** in `action/`, published to the Marketplace: runs the check, uploads the JSON report artifact, writes Markdown to `$GITHUB_STEP_SUMMARY`, optionally posts/updates a PR comment.
-- Docs site generated from `docs/`, with one page per signature (the long-tail SEO engine — someone searching "connection reset during kubernetes rolling update" should land on `SC004`).
-- README: problem statement, demo GIF, install matrix, quick start, score badge, honest scope/limitations section.
+- GoReleaser: linux/darwin/windows × amd64/arm64, checksums, `cosign` keyless signatures, SBOM per archive, SLSA provenance, GitHub Release automation.
+- `go install` reports a real version: the binary reads `debug.ReadBuildInfo` when no ldflags were applied, so an installed build no longer calls itself `dev`.
+- Checksum-verifying install script, Homebrew tap and Scoop manifest.
+- Distroless multi-arch image published to GHCR. The same image doubles as its own broken demo service, so no second image has to be maintained.
+- **GitHub Action** in `action/` as a composite action, so it adds no image to a user's supply chain. Records once as NDJSON and renders twice, meaning the service under test is terminated exactly once.
+- `shutdowncheck demo`, per [ADR-0013](docs/adr/0013-demo-subcommand.md) and [ADR-0015](docs/adr/0015-demo-without-recorded-fallback.md).
+- One published page per signature under `docs/signatures/`, generated from the catalogue compiled into the binary so the website cannot drift from what the tool reports.
+- README: install matrix, verification instructions, CI snippet, honest status banner.
 
-**Exit criteria:** a tagged release produces every artifact automatically; the Action verified working in a throwaway repository; `brew install`, `go install`, and the container image all verified on a clean machine.
+**Exit criteria** — met in code; see the deviation below on verification
+- A tagged release produces every artefact automatically.
+- `go install` verified locally, including version reporting.
+
+**Deviations from plan**
+- GoReleaser could not be run locally: v2 now requires Go 1.27, which Windows Defender quarantines on this machine. Rather than leave the config unchecked, CI gained a `release-config` job that runs `goreleaser check` **and** a full snapshot build on every push, so a broken release pipeline fails on the pull request that broke it rather than at tag time.
+- The demo's recorded fallback was dropped ([ADR-0015](docs/adr/0015-demo-without-recorded-fallback.md)). A genuine recording cannot be produced on the platform that needs it, and synthesising one would be fabricated evidence in the one command whose job is to earn trust.
+- The docs site generator is deferred; the per-signature pages it would consume are generated and committed, which is the part that carries the value.
+- The demo GIF is deferred: it needs a real terminal recording on a machine that can run the demo.
+
+**Verified locally:** `go install` path, version injection from both ldflags and build info, the demo's platform refusal, the Action's JSON contract (pinned by test), signature page generation and drift detection.
+
+**Not verifiable locally:** GoReleaser execution, the release workflow, the install script, the container image, and the Action itself. All are exercised by CI on the next push.
+
+**Still owed before v1.0:** the Action proven working in a throwaway repository, and `brew install`, the install script and the container image each verified on a clean machine. Written but unproven is not the same as done, and these carry over into Phase 9.
 
 ---
 

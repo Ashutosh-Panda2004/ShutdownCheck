@@ -9,7 +9,7 @@
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('help', 'build', 'test', 'race', 'cover', 'fmt', 'vet', 'lint', 'tidy', 'vuln', 'fuzz', 'ci', 'clean')]
+    [ValidateSet('help', 'build', 'test', 'race', 'cover', 'fmt', 'vet', 'lint', 'tidy', 'vuln', 'fuzz', 'docs', 'release-check', 'snapshot', 'ci', 'clean')]
     [string]$Target = 'help'
 )
 
@@ -97,9 +97,18 @@ function Target-Cover {
     go tool cover '-func=coverage.out' | Select-Object -Last 1
 }
 
+function Invoke-Goreleaser([string[]] $Arguments) {
+    if (-not (Get-Command goreleaser -ErrorAction SilentlyContinue)) {
+        Write-Host 'goreleaser not installed: https://goreleaser.com/install' -ForegroundColor Yellow
+        Write-Host 'CI validates the release config on every push, so this is optional locally.' -ForegroundColor Yellow
+        return
+    }
+    Invoke-Step "goreleaser $($Arguments -join ' ')" { goreleaser @Arguments }
+}
+
 switch ($Target) {
     'help' {
-        Write-Host 'Targets: build test race cover fmt vet lint tidy vuln fuzz ci clean'
+        Write-Host 'Targets: build test race cover fmt vet lint tidy vuln fuzz docs release-check snapshot ci clean'
         Write-Host 'Usage:   .\make.ps1 ci'
     }
     'build' { Target-Build }
@@ -128,8 +137,14 @@ switch ($Target) {
         Target-Cover
         Write-Host 'CI checks passed' -ForegroundColor Green
     }
+    'docs' {
+        Invoke-Step 'docs' { go test ./internal/remediate -update }
+        Write-Host 'docs/signatures regenerated; commit any changes' -ForegroundColor Green
+    }
+    'release-check' { Invoke-Goreleaser @('check') }
+    'snapshot' { Invoke-Goreleaser @('build', '--snapshot', '--clean') }
     'clean' {
-        Remove-Item -Recurse -Force -ErrorAction SilentlyContinue bin, coverage.out
+        Remove-Item -Recurse -Force -ErrorAction SilentlyContinue bin, dist, coverage.out
         Write-Host 'cleaned'
     }
 }

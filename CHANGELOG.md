@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `shutdowncheck demo` runs a real check against a deliberately broken service
+  that the binary spawns of itself, so a new user can see a report without
+  setting anything up. It is a real process receiving a real signal, measured by
+  the ordinary run pipeline: there is no code path in the tool that prints a
+  report it did not measure.
+- Release pipeline: GoReleaser builds linux, macOS and Windows on amd64 and
+  arm64, with checksums, cosign keyless signatures, an SBOM per archive and
+  SLSA build provenance. A tag runs the full test suite before anything is
+  published, so a broken binary can never acquire a signature saying it is fine.
+- A checksum-verifying install script, a Homebrew tap, a Scoop manifest and a
+  distroless multi-arch image on GHCR. The image doubles as its own broken demo
+  service, so there is no second image to keep in step.
+- GitHub Action in `action/`, as a composite action so it adds no image to
+  anyone's supply chain. It records the run once and renders it twice, meaning
+  the service under test is terminated exactly once no matter how many
+  artifacts come out.
+- One published page per failure signature under `docs/signatures/`, generated
+  from the catalogue compiled into the binary. The website cannot drift from
+  what the tool actually reports, and CI fails if it does.
 - Docker target: `shutdowncheck run --docker api --url /healthz` terminates a
   running container under load and reports the same seven stages as a local
   process. Signals go through `docker kill`, the exit code through `docker wait`
@@ -101,6 +120,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- A binary from `go install` now reports its real version. There are no ldflags
+  on that path, so it falls back to the module version and VCS stamp the
+  toolchain embeds instead of calling itself `dev`.
 - Container-reference validation is single-sourced in `internal/target`. It was
   implemented twice, once for config files and once for the run path; two copies
   of the same security rule are two copies that can drift apart.
@@ -114,6 +136,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Two build artefacts had been committed by accident in earlier phases and are
+  now removed and ignored.
 - The orphaned-listener fixture re-bound the port instead of inheriting the
   listening socket, so it would have failed with "address already in use" and
   reproduced nothing. The child now receives the socket as a file descriptor,
