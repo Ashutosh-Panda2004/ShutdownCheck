@@ -21,3 +21,4 @@ Copy [0000-template.md](0000-template.md) to start a new one. ADRs are immutable
 | [0011](0011-pure-analysis-core.md) | The analysis core is pure and mechanically enforced | Accepted |
 | [0012](0012-cli-without-cobra.md) | Build the CLI on the standard library rather than Cobra | Accepted |
 | [0013](0013-demo-subcommand.md) | Ship `demo` as a self-spawned subcommand, with a recorded fallback | Accepted |
+| [0014](0014-docker-via-cli.md) | Drive Docker through the CLI rather than the Engine SDK | Accepted |

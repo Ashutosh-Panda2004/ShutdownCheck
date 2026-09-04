@@ -1,10 +1,12 @@
 # ShutdownCheck
 
 > **Status: alpha.** The tool runs end to end and produces a verdict. Process,
-> managed-command targets and all report formats work on Linux and macOS;
-> Windows needs the Docker target, which lands in Phase 7. Container and
-> Kubernetes targets, the cross-language conformance suite and published
-> binaries are still to come — see [DEVELOPMENT-PLAN.md](DEVELOPMENT-PLAN.md).
+> managed-command and Docker targets work, along with every report format, and
+> the same shutdown defects are verified in Go, Node.js and Python. On Windows,
+> use the Docker target: the platform has no `SIGTERM`, and simulating one
+> would produce a verdict about a signal that was never delivered. Kubernetes
+> targeting and published binaries are still to come — see
+> [DEVELOPMENT-PLAN.md](DEVELOPMENT-PLAN.md).
 > Not yet recommended as a merge gate you depend on.
 
 **ShutdownCheck terminates your service the way your orchestrator will — under real load — and tells you exactly which stage of shutdown you got wrong, and how to fix it in your framework.**
@@ -68,12 +70,19 @@ $ shutdowncheck run ... --format ndjson --output run.ndjson
 $ shutdowncheck analyze run.ndjson --profile kubernetes
 ```
 
+Containers are targeted the same way, with the probe URL filled in from the
+container's published ports:
+
+```console
+$ shutdowncheck run --docker my-api --url /api/orders --readiness-url /readyz
+```
+
 Full sample output is in [spec section 3.3](shutdowncheck-spec.md).
 
 ## Design commitments
 
 - **Never a false PASS.** If the tool cannot prove correct behaviour, it reports `INCONCLUSIVE`. Trust is the only asset a verification tool has.
-- **Black box.** No source access, no library import, no agent, no sidecar. Go, Java, C#, Python and Node services are tested by the identical command.
+- **Black box.** No source access, no library import, no agent, no sidecar. Go, Java, C#, Python and Node services are tested by the identical command, and the [conformance suite](test/conformance) proves it rather than asserting it.
 - **Deterministic and explainable.** Every verdict traces to a named rule over recorded evidence. No heuristics, no ML, no AI.
 - **Single static binary.** No runtime, no daemon, no cluster install, no account.
 - **No telemetry. Ever.**

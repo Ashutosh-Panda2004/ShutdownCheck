@@ -32,9 +32,10 @@ type runFlags struct {
 	configPath string
 	scenario   string
 
-	pid    int
-	docker string
-	argv   []string
+	pid           int
+	docker        string
+	containerPort string
+	argv          []string
 
 	url          string
 	method       string
@@ -92,6 +93,7 @@ func parseRunFlags(args []string, stderr io.Writer) (*runFlags, error) {
 
 	f.fs.IntVar(&f.pid, "pid", 0, "attach to an existing process by id")
 	f.fs.StringVar(&f.docker, "docker", "", "target a running container by name or id")
+	f.fs.StringVar(&f.containerPort, "container-port", "", "container port to probe, when the container publishes more than one")
 
 	f.fs.StringVar(&f.url, "url", "", "endpoint to load (required)")
 	f.fs.StringVar(&f.method, "method", "", "HTTP method (default GET)")
@@ -159,6 +161,7 @@ Target (choose exactly one):
   -- <command>            spawn and manage the process (recommended)
   --pid <n>               attach to an existing process
   --docker <name|id>      target a running container
+  --container-port <port> which container port to probe, if several are published
 
 Common flags:
   --url <url>             endpoint to load (required)
@@ -410,6 +413,10 @@ func executeTrials(ctx context.Context, flags *runFlags, resolved *config.Resolv
 		last    trialOutcome
 	)
 
+	if err := resolveDockerURLs(ctx, flags, resolved); err != nil {
+		return analyze.Result{}, &targetError{err}
+	}
+
 	for trial := 1; trial <= resolved.Trials; trial++ {
 		if !flags.quiet && resolved.Trials > 1 {
 			fmt.Fprintf(stderr, "trial %d of %d\n", trial, resolved.Trials)
@@ -430,6 +437,52 @@ func executeTrials(ctx context.Context, flags *runFlags, resolved *config.Resolv
 	aggregated.Facts = last.analysis.Facts
 	flags.lastTimeline = last.tl
 	return aggregated, nil
+}
+
+// resolveDockerURLs turns path-only URLs into absolute ones using the
+// container's published ports, so `--docker api --url /healthz` works without
+// the user first running docker inspect to find the mapped port.
+//
+// It resolves once per run rather than per trial: a port cannot be remapped
+// while the container keeps running, and re-inspecting would only add failure
+// modes between trials.
+func resolveDockerURLs(ctx context.Context, flags *runFlags, resolved *config.Resolved) error {
+	if resolved.Target.Kind != analyze.TargetDocker {
+		if flags.containerPort != "" {
+			return usagef("--container-port only applies to --docker targets")
+		}
+		return nil
+	}
+
+	needsHost := strings.HasPrefix(resolved.Probe.ReadinessURL, "/")
+	for _, req := range resolved.Probe.Requests {
+		if strings.HasPrefix(req.URL, "/") {
+			needsHost = true
+		}
+	}
+	if !needsHost && flags.containerPort == "" {
+		return nil
+	}
+
+	state, err := target.InspectContainer(ctx, resolved.Target.Docker)
+	if err != nil {
+		return err
+	}
+	addr, err := target.ResolveContainerPort(state, flags.containerPort)
+	if err != nil {
+		return err
+	}
+
+	base := "http://" + addr
+	for i := range resolved.Probe.Requests {
+		if strings.HasPrefix(resolved.Probe.Requests[i].URL, "/") {
+			resolved.Probe.Requests[i].URL = base + resolved.Probe.Requests[i].URL
+		}
+	}
+	if strings.HasPrefix(resolved.Probe.ReadinessURL, "/") {
+		resolved.Probe.ReadinessURL = base + resolved.Probe.ReadinessURL
+	}
+	return nil
 }
 
 func executeOnce(ctx context.Context, flags *runFlags, resolved *config.Resolved, trial int) (trialOutcome, error) {
@@ -563,6 +616,11 @@ func buildTarget(resolved *config.Resolved, recorder *timeline.Recorder, now fun
 	case analyze.TargetProcess:
 		return target.NewProcess(target.ProcessOptions{
 			PID: resolved.Target.PID, Ready: ready, GracePeriod: resolved.Termination.GracePeriod,
+		})
+	case analyze.TargetDocker:
+		return target.NewDocker(target.DockerOptions{
+			Container: resolved.Target.Docker, Ready: ready, LogSink: sink,
+			GracePeriod: resolved.Termination.GracePeriod,
 		})
 	default:
 		return nil, fmt.Errorf("target kind %q is not supported yet", resolved.Target.Kind)

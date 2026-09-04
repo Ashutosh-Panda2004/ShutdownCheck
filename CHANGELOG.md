@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Docker target: `shutdowncheck run --docker api --url /healthz` terminates a
+  running container under load and reports the same seven stages as a local
+  process. Signals go through `docker kill`, the exit code through `docker wait`
+  and logs through `docker logs --follow`, all via the CLI rather than the
+  Engine SDK so the dependency count stays at one.
+- Port-mapping resolution, so a path-only URL is completed from the container's
+  published ports rather than requiring a `docker inspect` first. Ambiguity is
+  reported with the candidates listed instead of guessed at, because probing an
+  admin or metrics listener would draw conclusions about the wrong socket.
+- The conformance matrix now runs through the Docker target as well, judged by
+  the same assertions as the process target.
 - Cross-language conformance suite (`test/conformance/`): the same thirteen
   shutdown defects implemented in Go, Node.js and Python, each asserted to
   produce the same verdict and the same signatures. This is where "works
@@ -90,6 +101,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Container-reference validation is single-sourced in `internal/target`. It was
+  implemented twice, once for config files and once for the run path; two copies
+  of the same security rule are two copies that can drift apart.
 - The end-to-end tests now build the shared conformance server instead of
   keeping a near-identical fixture of their own, and cover the command-line
   surface — formats, file permissions, exit codes, trial aggregation — while
@@ -119,5 +133,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The conformance suite covers Go, Node.js and Python. Java and C# are deferred
   until they can be verified on a machine with those toolchains rather than
   written blind.
+- A container that genuinely exits `137` on its own is indistinguishable from
+  one that was `SIGKILL`ed, because the `128 + signal` convention is all the
+  Docker interface exposes.
+- The orphaned-listener defect (SC012) cannot be reproduced inside a container:
+  when PID 1 exits, the daemon reaps everything else with it.
 
 [Unreleased]: https://github.com/shutdowncheck/shutdowncheck/commits/main

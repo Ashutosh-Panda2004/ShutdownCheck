@@ -13,6 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/shutdowncheck/shutdowncheck/internal/analyze"
+	"github.com/shutdowncheck/shutdowncheck/internal/target"
 )
 
 // Problem is one validation failure, located by its path in the config file.
@@ -327,22 +328,9 @@ func validSignal(s string) bool {
 }
 
 // validContainerRef restricts container references to what Docker itself
-// allows. The value reaches a subprocess argv, so it is checked against an
-// allowlist rather than merely escaped.
-func validContainerRef(s string) bool {
-	if s == "" || len(s) > 128 {
-		return false
-	}
-	for i, r := range s {
-		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
-		case (r == '_' || r == '.' || r == '-') && i > 0:
-		default:
-			return false
-		}
-	}
-	return true
-}
+// allows. The value reaches a subprocess argv, so the rule is owned by the
+// package that builds that argv rather than duplicated here.
+func validContainerRef(s string) bool { return target.ValidContainerRef(s) }
 
 func profileList() string {
 	names := make([]string, 0, len(analyze.Profiles()))

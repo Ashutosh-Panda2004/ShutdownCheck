@@ -177,13 +177,40 @@ func interpretedServer(interpreter, script string) func(*testing.T) ([]string, s
 // singleLanguageSignatures are defects of process topology rather than of any
 // framework: they are about file-descriptor inheritance and process groups, and
 // behave identically whatever the service is written in.
-//
 // Reimplementing them per language would test the fixture's plumbing rather
 // than the tool, so one faithful implementation is enough. Anything not listed
 // here needs two, because it depends on framework behaviour that genuinely
 // differs between stacks.
 var singleLanguageSignatures = map[analyze.SignatureID]string{
 	analyze.SC012: "an orphaned listener is inherited through a file descriptor, which is stack-independent",
+}
+
+// dockerExcludedModes are scenarios the containerised run cannot reproduce.
+//
+// When PID 1 exits, the daemon tears down the whole container, so an orphaned
+// listener cannot survive to be detected. That is a property of containers
+// rather than a gap in the tool, and asserting a defect the fixture cannot
+// exhibit would be testing fiction.
+var dockerExcludedModes = map[string]string{
+	"orphan-child": "the daemon reaps the whole container when PID 1 exits, so nothing is orphaned",
+}
+
+// An exclusion that stops being true should be removed rather than left to
+// quietly shrink the matrix.
+func TestDockerExclusionsAreRealModes(t *testing.T) {
+	known := map[string]bool{}
+	for _, s := range scenarios {
+		known[s.mode] = true
+	}
+
+	for mode, reason := range dockerExcludedModes {
+		if !known[mode] {
+			t.Errorf("%q is excluded from the docker run but is not a scenario", mode)
+		}
+		if reason == "" {
+			t.Errorf("%q is excluded without a reason", mode)
+		}
+	}
 }
 
 // Every signature the suite claims to cover must be exercised in at least two

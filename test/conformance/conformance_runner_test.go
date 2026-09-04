@@ -99,7 +99,14 @@ func runScenario(t *testing.T, serverArgv []string, s scenario) {
 
 	var stdout, stderr bytes.Buffer
 	code := cli.Main(args, &stdout, &stderr)
-	output := stdout.String()
+	assertScenario(t, s, code, stdout.String(), stderr.String())
+}
+
+// assertScenario is the contract, shared by every way of reaching a target.
+// A Docker container and a local process must be judged identically, so they
+// must be checked by identical code.
+func assertScenario(t *testing.T, s scenario, code int, output, stderrText string) {
+	t.Helper()
 
 	// The single most important property in the whole project: a server with a
 	// known defect must never produce a pass.
@@ -109,7 +116,7 @@ func runScenario(t *testing.T, serverArgv []string, s scenario) {
 
 	if s.verdict != "" && code != s.verdict.ExitCode() {
 		t.Fatalf("exit = %d, want %d (%s)\nstdout:\n%s\nstderr:\n%s",
-			code, s.verdict.ExitCode(), s.verdict, output, stderr.String())
+			code, s.verdict.ExitCode(), s.verdict, output, stderrText)
 	}
 
 	for _, id := range s.mustFire {

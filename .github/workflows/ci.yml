@@ -81,6 +81,12 @@ jobs:
           node --version
           python3 --version
 
+      # Only the Linux runners have a Docker daemon, so that is the only place
+      # the containerised run is required rather than skipped.
+      - name: Require the docker target on Linux
+        if: matrix.os == 'ubuntu-latest'
+        run: echo "SHUTDOWNCHECK_REQUIRE_DOCKER=1" >> "$GITHUB_ENV"
+
       - name: Conformance and end-to-end suites
         run: go test -race -timeout 20m ./test/...
 

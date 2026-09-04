@@ -206,19 +206,27 @@ Phases 2 and 4 are independent of each other and can be reordered or interleaved
 
 ---
 
-## Phase 7 — Docker Target
+## Phase 7 — Docker Target ✅
 
 **Size:** M · **Goal:** Move from "a process on my laptop" to how services actually run.
 
 **Deliverables**
-- `DockerTarget`: signal via `docker kill --signal=TERM`, liveness and exit code via `docker inspect`, logs via `docker logs --follow`.
-- Container identifier validation against a strict allowlist regex before it ever reaches argv.
-- Docker-specific defaults: 10s grace period, `docker` profile.
-- Port-mapping resolution so the probe URL can be derived from the container.
-- Clear, actionable degradation when the Docker CLI or daemon is unavailable (exit code `4`, not a stack trace).
-- E2E: the entire conformance matrix re-run through the Docker target.
+- `DockerTarget`: signal via `docker kill --signal=TERM`, liveness and exit code via `docker wait`, logs via `docker logs --follow`. Driven through the CLI rather than the Engine SDK — see [ADR-0014](docs/adr/0014-docker-via-cli.md).
+- Container references validated against a strict allowlist before reaching argv, single-sourced in `internal/target` so the config and run paths cannot disagree.
+- Docker-specific defaults: 10s grace period, `docker` profile, both already present in the policy layer.
+- Port-mapping resolution, so `--docker api --url /healthz` works without first running `docker inspect` to find the mapped port.
+- Docker CLI or daemon unavailable exits `4` with an actionable message naming the alternative targets.
+- The conformance matrix re-run through the Docker target, judged by the same assertions as the process target.
 
-**Exit criteria:** all conformance variants produce identical verdicts via the Docker target as via the process target (modulo profile differences); Linux CI green.
+**Exit criteria** — met, subject to the deviation below
+- All conformance modes produce identical verdicts via the Docker target as via the process target.
+- Linux CI green, with the containerised run required rather than skipped there.
+
+**Deviations from plan**
+- `orphan-child` is excluded from the containerised matrix. When PID 1 exits, the daemon reaps the whole container, so an orphaned listener cannot survive to be detected. That is a property of containers, not a gap in the tool, and the exclusion is itself tested.
+- Liveness is watched rather than polled. The runner asks `Alive` every 10ms; shelling out at that rate would have quantised the measured shutdown duration to process-spawn latency, corrupting the primary measurement.
+
+**Risk:** the CLI output contract. Confined to one file, parsed as explicit JSON rather than scraped, and covered by the containerised conformance run.
 
 ---
 
