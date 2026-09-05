@@ -3,6 +3,8 @@ package load
 import (
 	"context"
 	"errors"
+	"math"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -91,6 +93,32 @@ func TestCalibrateRespectsConcurrencyCap(t *testing.T) {
 	}
 }
 
+func TestCalibrateNeverRoundsPastFractionalCeilings(t *testing.T) {
+	for name, input := range map[string]Input{
+		"max rps": {
+			Latencies: constantLatencies(20, time.Second), Total: 20,
+			TargetInFlight: 2, MaxRPS: 1.5, ConcurrencyCap: 10,
+		},
+		"concurrency": {
+			Latencies: constantLatencies(20, 400*time.Millisecond), Total: 20,
+			TargetInFlight: 10, MaxRPS: 100, ConcurrencyCap: 3,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := Calibrate(input)
+			if err != nil {
+				t.Fatalf("Calibrate: %v", err)
+			}
+			if input.MaxRPS > 0 && got.RPS > input.MaxRPS {
+				t.Errorf("RPS = %v, exceeds max %v", got.RPS, input.MaxRPS)
+			}
+			if got.ExpectedInFlight > float64(input.ConcurrencyCap)+1e-9 {
+				t.Errorf("expected in flight = %v, exceeds concurrency cap %d", got.ExpectedInFlight, input.ConcurrencyCap)
+			}
+		})
+	}
+}
+
 func TestCalibrateRejectsUnhealthyTarget(t *testing.T) {
 	_, err := Calibrate(Input{
 		Latencies:      constantLatencies(90, 10*time.Millisecond),
@@ -103,6 +131,14 @@ func TestCalibrateRejectsUnhealthyTarget(t *testing.T) {
 	var unhealthy *ErrTargetUnhealthy
 	if !errors.As(err, &unhealthy) {
 		t.Fatalf("Calibrate error = %v, want ErrTargetUnhealthy", err)
+	}
+}
+
+func TestAssessBaselineRejectsUnhealthyFixedRateTarget(t *testing.T) {
+	_, _, err := AssessBaseline(constantLatencies(90, 10*time.Millisecond), 10, 100)
+	var unhealthy *ErrTargetUnhealthy
+	if !errors.As(err, &unhealthy) {
+		t.Fatalf("AssessBaseline error = %v, want ErrTargetUnhealthy", err)
 	}
 }
 
@@ -170,7 +206,7 @@ func TestMedian(t *testing.T) {
 }
 
 func TestScheduleSpacing(t *testing.T) {
-	s := BuildSchedule(100, time.Second, []int{1})
+	s := BuildSchedule(100, time.Second)
 
 	if s.Len() != 100 {
 		t.Fatalf("Len() = %d, want 100", s.Len())
@@ -185,9 +221,11 @@ func TestScheduleSpacing(t *testing.T) {
 
 func TestScheduleEmptyForNonPositiveInputs(t *testing.T) {
 	for _, s := range []Schedule{
-		BuildSchedule(0, time.Second, []int{1}),
-		BuildSchedule(100, 0, []int{1}),
-		BuildSchedule(-5, time.Second, []int{1}),
+		BuildSchedule(0, time.Second),
+		BuildSchedule(100, 0),
+		BuildSchedule(-5, time.Second),
+		BuildSchedule(math.NaN(), time.Second),
+		BuildSchedule(math.Inf(1), time.Second),
 	} {
 		if s.Len() != 0 {
 			t.Errorf("expected an empty schedule, got %d dispatches", s.Len())
@@ -200,32 +238,37 @@ func TestScheduleEmptyForNonPositiveInputs(t *testing.T) {
 // from none to many slow requests in flight, and that variance would land
 // straight on the verdict.
 func TestScheduleWeightsAreExactAndInterleaved(t *testing.T) {
-	s := BuildSchedule(100, time.Second, []int{80, 20})
+	picker := newPicker([]int{80, 20})
 
 	counts := map[int]int{}
-	for i := range s.Len() {
-		counts[s.Request(i)]++
+	early := map[int]int{}
+	for i := range 100 {
+		selected := picker.next()
+		counts[selected]++
+		if i < 20 {
+			early[selected]++
+		}
 	}
 	if counts[0] != 80 || counts[1] != 20 {
 		t.Fatalf("mix = %v, want 80/20 exactly", counts)
 	}
 
 	// Check the proportion also holds in the first fifth of the window.
-	early := map[int]int{}
-	for i := range 20 {
-		early[s.Request(i)]++
-	}
 	if early[1] != 4 {
 		t.Errorf("first 20 dispatches contained %d weighted requests, want 4", early[1])
 	}
 }
 
 func TestScheduleIsDeterministic(t *testing.T) {
-	first := BuildSchedule(50, time.Second, []int{3, 1, 1})
+	first := make([]int, 50)
+	picker := newPicker([]int{3, 1, 1})
+	for i := range first {
+		first[i] = picker.next()
+	}
 	for range 10 {
-		next := BuildSchedule(50, time.Second, []int{3, 1, 1})
-		for i := range first.Len() {
-			if first.Request(i) != next.Request(i) {
+		next := newPicker([]int{3, 1, 1})
+		for i, want := range first {
+			if got := next.next(); got != want {
 				t.Fatalf("schedule differs at dispatch %d; runs would not be comparable", i)
 			}
 		}
@@ -233,17 +276,39 @@ func TestScheduleIsDeterministic(t *testing.T) {
 }
 
 func TestScheduleHandlesZeroWeights(t *testing.T) {
-	s := BuildSchedule(10, time.Second, []int{0, 0})
-	if s.Len() != 10 {
-		t.Fatalf("Len() = %d, want 10", s.Len())
-	}
-
+	picker := newPicker([]int{0, 0})
 	counts := map[int]int{}
-	for i := range s.Len() {
-		counts[s.Request(i)]++
+	for range 10 {
+		counts[picker.next()]++
 	}
 	if counts[0] == 0 || counts[1] == 0 {
 		t.Errorf("all-zero weights should fall back to equal shares, got %v", counts)
+	}
+}
+
+func TestScheduleDoesNotMaterializeHugePlan(t *testing.T) {
+	s := BuildSchedule(1e12, time.Hour)
+	if s.Len() <= 0 {
+		t.Fatal("a finite positive schedule should retain its dispatch count")
+	}
+}
+
+func TestPhaseResultsBoundLatencySamples(t *testing.T) {
+	var results phaseResults
+	total := maxLatencySamples + 3
+	for i := range total {
+		results.record(i, time.Duration(i), 0, true, false)
+	}
+
+	got := results.finish(total)
+	if got.Dispatched != total || got.Completed != total {
+		t.Fatalf("counts = %d/%d, want %d/%d", got.Dispatched, got.Completed, total, total)
+	}
+	if len(got.Latencies) != maxLatencySamples || got.DroppedLatencySamples != 3 {
+		t.Fatalf("samples = %d + %d dropped, want %d + 3", len(got.Latencies), got.DroppedLatencySamples, maxLatencySamples)
+	}
+	if got.Latencies[0] != 0 || got.Latencies[len(got.Latencies)-1] != time.Duration(maxLatencySamples-1) {
+		t.Fatal("retained latency samples are not in dispatch order")
 	}
 }
 
@@ -331,6 +396,80 @@ func TestGeneratorDispatchesAtTheScheduledRate(t *testing.T) {
 		fake.Advance(10 * time.Millisecond)
 		time.Sleep(time.Millisecond)
 	}
+}
+
+func TestGeneratorPinsSlowRequestsAtPhaseStart(t *testing.T) {
+	testutil.NoLeaks(t)
+
+	prober := &fakeProber{clock: clock.System()}
+	g, rec := newTestGenerator(t, prober, clock.System(), 10)
+	slow := probe.Request{Name: "slow", Method: "GET", URL: "http://localhost:8080/slow"}
+
+	result := g.Run(context.Background(), time.Now(), Phase{
+		PinnedRequest: &slow,
+		PinnedCount:   3,
+	})
+
+	if result.Dispatched != 3 {
+		t.Fatalf("dispatched %d requests, want 3 pinned requests", result.Dispatched)
+	}
+	requests := rec.Snapshot().Requests()
+	if len(requests) != 3 {
+		t.Fatalf("recorded %d requests, want 3", len(requests))
+	}
+	for _, request := range requests {
+		if request.Definition != "slow" || request.URL != slow.URL {
+			t.Errorf("pinned request = %+v", request)
+		}
+	}
+}
+
+type blockingProber struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (p *blockingProber) Do(ctx context.Context, _ probe.Request) probe.Attempt {
+	p.started <- struct{}{}
+	select {
+	case <-p.release:
+		return probe.Attempt{Status: 200, Outcome: timeline.OutcomeOK}
+	case <-ctx.Done():
+		return probe.Attempt{Outcome: timeline.OutcomeAbandoned}
+	}
+}
+
+func TestGeneratorPinsSlowRequestsAtConfiguredOffset(t *testing.T) {
+	prober := &blockingProber{started: make(chan struct{}, 2), release: make(chan struct{})}
+	ready := make(chan int, 1)
+	g, _ := newTestGenerator(t, prober, clock.System(), 4)
+
+	done := make(chan Result, 1)
+	start := time.Now()
+	go func() {
+		done <- g.Run(context.Background(), start, Phase{
+			Duration:      150 * time.Millisecond,
+			PinnedRequest: &probe.Request{Name: "slow", URL: "http://localhost/slow"},
+			PinnedCount:   2,
+			PinnedAt:      60 * time.Millisecond,
+			PinnedReady:   ready,
+		})
+	}()
+
+	select {
+	case <-prober.started:
+		if elapsed := time.Since(start); elapsed < 40*time.Millisecond {
+			t.Fatalf("pinned request started too early at %s", elapsed)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("pinned request never started")
+	}
+	<-prober.started
+	if got := <-ready; got != 2 {
+		t.Errorf("PinnedReady = %d, want 2", got)
+	}
+	close(prober.release)
+	<-done
 }
 
 // The defining property of an open model: when the server slows down, the
@@ -490,6 +629,28 @@ func TestGeneratorRedactsRecordedURLs(t *testing.T) {
 		if got := r.URL; got == "" || contains(got, "secret") {
 			t.Fatalf("recorded URL leaked a secret: %q", got)
 		}
+	}
+}
+
+func TestGeneratorRedactsRecordedRequestNames(t *testing.T) {
+	const secret = "request-name-secret"
+	rec := timeline.NewRecorder(timeline.Meta{}, 10)
+	g := New(Options{
+		Prober:         &realSleepProber{},
+		Clock:          clock.System(),
+		Recorder:       rec,
+		Requests:       []probe.Request{{Name: "token=" + secret, Method: "GET", URL: "http://localhost/"}},
+		Weights:        []int{1},
+		ConcurrencyCap: 1,
+	})
+
+	g.Run(context.Background(), time.Now(), Phase{Rate: 10, Duration: 100 * time.Millisecond})
+	requests := rec.Snapshot().Requests()
+	if len(requests) != 1 {
+		t.Fatalf("recorded %d requests, want 1", len(requests))
+	}
+	if strings.Contains(requests[0].Definition, secret) {
+		t.Fatalf("request definition leaked a secret: %q", requests[0].Definition)
 	}
 }
 

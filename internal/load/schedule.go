@@ -15,7 +15,6 @@ import (
 type Schedule struct {
 	rate  float64
 	count int
-	picks []int
 }
 
 // BuildSchedule lays out dispatches for a phase.
@@ -25,27 +24,20 @@ type Schedule struct {
 // could put anywhere from zero to eight slow requests in flight at the signal,
 // and that variance lands directly on the verdict. Smooth weighted round-robin
 // holds the mix steady in every window, so repeated runs are comparable.
-func BuildSchedule(rate float64, duration time.Duration, weights []int) Schedule {
-	if rate <= 0 || duration <= 0 {
+func BuildSchedule(rate float64, duration time.Duration) Schedule {
+	if rate <= 0 || duration <= 0 || math.IsNaN(rate) || math.IsInf(rate, 0) {
 		return Schedule{}
 	}
 
-	count := int(math.Floor(rate * duration.Seconds()))
-	if count < 0 {
-		count = 0
+	planned := math.Floor(rate * duration.Seconds())
+	maxInt := int(^uint(0) >> 1)
+	if math.IsInf(planned, 1) || planned >= float64(maxInt) {
+		return Schedule{rate: rate, count: maxInt}
 	}
-
-	s := Schedule{rate: rate, count: count}
-	if count == 0 {
-		return s
+	if planned <= 0 {
+		return Schedule{rate: rate}
 	}
-
-	s.picks = make([]int, count)
-	p := newPicker(weights)
-	for i := range s.picks {
-		s.picks[i] = p.next()
-	}
-	return s
+	return Schedule{rate: rate, count: int(planned)}
 }
 
 // Len is the number of dispatches.
@@ -59,32 +51,24 @@ func (s Schedule) At(i int) time.Duration {
 	return time.Duration(float64(i) / s.rate * float64(time.Second))
 }
 
-// Request returns the request-definition index for dispatch i.
-func (s Schedule) Request(i int) int {
-	if i < 0 || i >= len(s.picks) {
-		return 0
-	}
-	return s.picks[i]
-}
-
 // picker implements smooth weighted round-robin: each step adds every weight to
 // a running counter, serves the highest, and subtracts the total. The result
 // interleaves definitions evenly instead of emitting them in runs.
 type picker struct {
-	weights []int
-	current []int
-	total   int
+	weights []float64
+	current []float64
+	total   float64
 }
 
 func newPicker(weights []int) *picker {
-	p := &picker{weights: make([]int, len(weights)), current: make([]int, len(weights))}
+	p := &picker{weights: make([]float64, len(weights)), current: make([]float64, len(weights))}
 
 	for i, w := range weights {
 		if w < 0 {
 			w = 0
 		}
-		p.weights[i] = w
-		p.total += w
+		p.weights[i] = float64(w)
+		p.total += float64(w)
 	}
 
 	// Every weight zero, or no definitions at all: fall back to equal shares so
@@ -93,7 +77,7 @@ func newPicker(weights []int) *picker {
 		for i := range p.weights {
 			p.weights[i] = 1
 		}
-		p.total = len(p.weights)
+		p.total = float64(len(p.weights))
 	}
 	return p
 }

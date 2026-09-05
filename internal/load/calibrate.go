@@ -73,33 +73,17 @@ func Calibrate(in Input) (Calibration, error) {
 	if in.TargetInFlight < 1 {
 		return Calibration{}, fmt.Errorf("target in-flight must be at least 1, got %d", in.TargetInFlight)
 	}
-	if in.Total > 0 {
-		if rate := float64(in.Errors) / float64(in.Total); rate > MaxBaselineErrorRate {
-			return Calibration{}, &ErrTargetUnhealthy{Errors: in.Errors, Total: in.Total, Rate: rate}
-		}
-	}
 
-	samples := steadySamples(in.Latencies)
-	if len(samples) == 0 {
-		return Calibration{}, ErrNoSamples
+	baseline, warnings, err := AssessBaseline(in.Latencies, in.Errors, in.Total)
+	if err != nil {
+		return Calibration{}, err
 	}
-
-	out := Calibration{Achievable: true}
-	if len(samples) < MinCalibrationSamples {
-		out.Warnings = append(out.Warnings, fmt.Sprintf(
-			"calibrated from only %d samples; increase --warmup for a more reliable baseline", len(samples)))
-	}
-
-	baseline := median(samples)
-	if baseline <= 0 {
-		return Calibration{}, ErrNoSamples
-	}
-	out.BaselineLatency = baseline
+	out := Calibration{Achievable: true, BaselineLatency: baseline, Warnings: warnings}
 
 	seconds := baseline.Seconds()
 	ideal := float64(in.TargetInFlight) / seconds
 
-	rate := ideal
+	rate := math.Ceil(ideal)
 	if in.MaxRPS > 0 && rate > in.MaxRPS {
 		rate = in.MaxRPS
 		out.Achievable = false
@@ -122,12 +106,42 @@ func Calibrate(in Input) (Calibration, error) {
 		}
 	}
 
-	out.RPS = math.Ceil(rate)
+	out.RPS = rate
 	out.ExpectedInFlight = out.RPS * seconds
 	if out.ExpectedInFlight+1e-9 < float64(in.TargetInFlight) {
 		out.Achievable = false
 	}
 	return out, nil
+}
+
+// AssessBaseline validates warmup health and returns its steady-state median.
+// Fixed-rate runs use the same precondition checks as calibrated runs even
+// though they do not derive a new rate.
+func AssessBaseline(latencies []time.Duration, errorCount, total int) (time.Duration, []string, error) {
+	if errorCount < 0 || total < 0 || errorCount > total {
+		return 0, nil, fmt.Errorf("invalid warmup counts: %d errors from %d requests", errorCount, total)
+	}
+	if total > 0 {
+		if rate := float64(errorCount) / float64(total); rate > MaxBaselineErrorRate {
+			return 0, nil, &ErrTargetUnhealthy{Errors: errorCount, Total: total, Rate: rate}
+		}
+	}
+
+	samples := steadySamples(latencies)
+	if len(samples) == 0 {
+		return 0, nil, ErrNoSamples
+	}
+
+	var warnings []string
+	if len(samples) < MinCalibrationSamples {
+		warnings = append(warnings, fmt.Sprintf(
+			"baseline uses only %d samples; increase --warmup for a more reliable measurement", len(samples)))
+	}
+	baseline := median(samples)
+	if baseline <= 0 {
+		return 0, nil, ErrNoSamples
+	}
+	return baseline, warnings, nil
 }
 
 // steadySamples drops the leading warmup fraction, always keeping at least one
