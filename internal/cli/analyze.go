@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -8,6 +9,7 @@ import (
 	"path/filepath"
 
 	"github.com/shutdowncheck/shutdowncheck/internal/analyze"
+	"github.com/shutdowncheck/shutdowncheck/internal/redact"
 	"github.com/shutdowncheck/shutdowncheck/internal/report"
 	"github.com/shutdowncheck/shutdowncheck/internal/timeline"
 	"github.com/shutdowncheck/shutdowncheck/pkg/schema"
@@ -31,8 +33,9 @@ func analyzeCommand(args []string, stdout, stderr io.Writer) int {
 	fs.Usage = func() { printAnalyzeUsage(stderr) }
 
 	if err := fs.Parse(args); err != nil {
-		if err == flag.ErrHelp {
+		if errors.Is(err, flag.ErrHelp) {
 			printAnalyzeUsage(stderr)
+			return schema.ExitPass
 		}
 		return exitFor(usagef("%w", err), stderr)
 	}
@@ -48,8 +51,9 @@ func analyzeCommand(args []string, stdout, stderr io.Writer) int {
 	path := rest[0]
 
 	if err := fs.Parse(rest[1:]); err != nil {
-		if err == flag.ErrHelp {
+		if errors.Is(err, flag.ErrHelp) {
 			printAnalyzeUsage(stderr)
+			return schema.ExitPass
 		}
 		return exitFor(usagef("%w", err), stderr)
 	}
@@ -62,17 +66,17 @@ func analyzeCommand(args []string, stdout, stderr io.Writer) int {
 		return exitFor(usagef("%w", err), stderr)
 	}
 
-	policy, err := policyForReanalysis(tl, *profile)
+	input, trials, err := inputForReanalysis(tl, *profile)
 	if err != nil {
 		return exitFor(err, stderr)
 	}
-
-	result := analyze.Analyze(analyze.Input{
-		Timeline:    tl,
-		Policy:      policy,
-		ToolVersion: Version,
-		Target:      analyze.TargetInfo{Label: tl.Meta.Target},
-	})
+	input.ToolVersion = Version
+	result := analyze.Analyze(input)
+	if *profile == "" && tl.Meta.Analysis != nil {
+		result.Report.Run.Trials = schema.Trials{
+			Total: trials.Total, Failed: trials.Failed, Consistent: trials.Consistent,
+		}
+	}
 
 	if !report.Format(*format).Valid() {
 		return exitFor(usagef("unknown format %q; valid values are %v", *format, report.Formats()), stderr)
@@ -116,7 +120,11 @@ func readTimeline(path string) (timeline.Timeline, error) {
 
 // policyForReanalysis prefers the profile the caller asked for, falling back to
 // whichever one produced the recording.
-func policyForReanalysis(tl timeline.Timeline, override string) (analyze.Policy, error) {
+func inputForReanalysis(tl timeline.Timeline, override string) (analyze.Input, timeline.AnalysisTrials, error) {
+	if override == "" && tl.Meta.Analysis != nil {
+		return decodeAnalysisContext(tl)
+	}
+
 	name := override
 	if name == "" {
 		name = tl.Meta.Profile
@@ -125,16 +133,30 @@ func policyForReanalysis(tl timeline.Timeline, override string) (analyze.Policy,
 		name = string(analyze.ProfileStandalone)
 	}
 
-	profile := analyze.Profile(name).Resolve(analyze.TargetProcess)
+	kind := analyze.TargetProcess
+	input := analyze.Input{Timeline: tl, Target: analyze.TargetInfo{Label: redact.Text(tl.Meta.Target)}}
+	if tl.Meta.Analysis != nil {
+		stored, _, err := decodeAnalysisContext(tl)
+		if err != nil {
+			return analyze.Input{}, timeline.AnalysisTrials{}, usagef("%w", err)
+		}
+		input.Target = stored.Target
+		input.Probe = stored.Probe
+		input.Load = stored.Load
+		kind = stored.Target.Kind
+	}
+
+	profile := analyze.Profile(name).Resolve(kind)
 	policy, err := analyze.PolicyFor(profile)
 	if err != nil {
-		return analyze.Policy{}, usagef("%w", err)
+		return analyze.Input{}, timeline.AnalysisTrials{}, usagef("%w", err)
 	}
-	return policy, nil
+	input.Policy = policy
+	return input, timeline.AnalysisTrials{Total: 1, Consistent: true}, nil
 }
 
 func printAnalyzeUsage(w io.Writer) {
-	fmt.Fprint(w, `Usage: shutdowncheck analyze <run.ndjson> [flags]
+	writeBestEffort(w, `Usage: shutdowncheck analyze <run.ndjson> [flags]
 
 Re-judges a recorded run without running it again.
 
