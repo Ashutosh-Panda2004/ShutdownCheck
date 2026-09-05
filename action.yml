@@ -9,8 +9,7 @@ branding:
 inputs:
   version:
     description: Version of shutdowncheck to use, e.g. v1.2.3
-    required: false
-    default: latest
+    required: true
   url:
     description: URL to send load to during the check
     required: false
@@ -18,7 +17,7 @@ inputs:
     description: Readiness endpoint, so SC007 and SC008 can be evaluated
     required: false
   command:
-    description: Command to start and terminate, as it would follow `--` on the CLI
+    description: Command argv as a JSON string array, for example ["./api","--port","8080"]
     required: false
   docker:
     description: Name or id of a running container to target instead of a command
@@ -30,21 +29,21 @@ inputs:
     description: Scenario from the config file to run
     required: false
   profile:
-    description: Shutdown profile: auto, standalone, strict, lame-duck, kubernetes, docker
+    description: "Shutdown profile: auto, standalone, strict, lame-duck, kubernetes, docker"
     required: false
-    default: kubernetes
+    default: ''
   grace-period:
     description: How long to allow before escalating to SIGKILL
     required: false
   trials:
     description: Number of trials; the worst result across them is the verdict
     required: false
-    default: '1'
+    default: ''
   args:
-    description: Extra flags passed through to `shutdowncheck run` verbatim
+    description: Extra run arguments as a JSON string array
     required: false
   fail-on-error:
-    description: Fail the step when a defect is found. Set false to report without gating.
+    description: Fail on detected defects. Inconclusive and operational failures always fail.
     required: false
     default: 'true'
   comment-on-pr:
@@ -82,6 +81,62 @@ runs:
   steps:
     # Composite rather than a container action so every step is readable here,
     # and so the action adds no image to the supply chain of anyone using it.
+    - name: Require a POSIX runner
+      if: runner.os == 'Windows'
+      shell: bash
+      run: |
+        echo "::error::The ShutdownCheck Action requires Linux or macOS because process targets need POSIX signals. Use the CLI's --docker target directly on Windows."
+        exit 1
+
+    - name: Verify runner prerequisites
+      shell: bash
+      run: |
+        set -euo pipefail
+        command -v curl >/dev/null || { echo "::error::curl is required"; exit 1; }
+        command -v jq >/dev/null || { echo "::error::jq is required"; exit 1; }
+
+    - name: Validate inputs
+      shell: bash
+      env:
+        IN_VERSION: ${{ inputs.version }}
+        IN_COMMAND: ${{ inputs.command }}
+        IN_ARGS: ${{ inputs.args }}
+        IN_FAIL_ON_ERROR: ${{ inputs.fail-on-error }}
+        IN_COMMENT: ${{ inputs.comment-on-pr }}
+        IN_UPLOAD: ${{ inputs.upload-artifact }}
+        IN_ARTIFACT_NAME: ${{ inputs.artifact-name }}
+      run: |
+        set -euo pipefail
+
+        if [ -z "$IN_VERSION" ] || [ "$IN_VERSION" = "latest" ]; then
+          echo "::error::version is required and must be an exact release such as v1.2.3"
+          exit 3
+        fi
+
+        validate_bool() {
+          case "$2" in
+            true|false) ;;
+            *) echo "::error::$1 must be either true or false"; exit 3 ;;
+          esac
+        }
+        validate_bool fail-on-error "$IN_FAIL_ON_ERROR"
+        validate_bool comment-on-pr "$IN_COMMENT"
+        validate_bool upload-artifact "$IN_UPLOAD"
+
+        validate_array() {
+          if [ -n "$2" ] && ! jq -e 'type == "array" and all(.[]; type == "string")' >/dev/null <<< "$2"; then
+            echo "::error::$1 must be a JSON array of strings"
+            exit 3
+          fi
+        }
+        validate_array command "$IN_COMMAND"
+        validate_array args "$IN_ARGS"
+
+        if [ "$IN_UPLOAD" = "true" ] && [ -z "$IN_ARTIFACT_NAME" ]; then
+          echo "::error::artifact-name must not be empty when upload-artifact is true"
+          exit 3
+        fi
+
     - name: Install shutdowncheck
       shell: bash
       env:
@@ -89,7 +144,8 @@ runs:
         SHUTDOWNCHECK_BIN_DIR: ${{ runner.temp }}/shutdowncheck-bin
       run: |
         set -euo pipefail
-        curl -fsSL "https://raw.githubusercontent.com/shutdowncheck/shutdowncheck/${{ inputs.version == 'latest' && 'main' || inputs.version }}/install.sh" | sh
+        # Use the installer from the pinned Action revision, not a moving branch.
+        sh "$GITHUB_ACTION_PATH/install.sh"
         echo "${{ runner.temp }}/shutdowncheck-bin" >> "$GITHUB_PATH"
 
     - name: Run shutdowncheck
@@ -109,14 +165,13 @@ runs:
       run: |
         set -uo pipefail
 
-        recording="${RUNNER_TEMP}/shutdowncheck-run.ndjson"
         report="${RUNNER_TEMP}/shutdowncheck-report.json"
         summary="${RUNNER_TEMP}/shutdowncheck-summary.md"
+        rm -f "$report" "$summary"
 
-        # Recorded once as NDJSON, then rendered as many times as needed. The
-        # service is only terminated once, and every artefact below describes
-        # that same measurement rather than a fresh one.
-        args=(run --format ndjson --output "$recording" --no-color)
+        # The JSON must come from the original run. Re-analysing NDJSON would
+        # intentionally allow a different profile and could lose custom gates.
+        args=(run --format json --output "$report" --no-color)
 
         add_flag() { if [ -n "$2" ]; then args+=("$1" "$2"); fi; }
         add_flag --url            "$IN_URL"
@@ -128,14 +183,26 @@ runs:
         add_flag --grace-period   "$IN_GRACE"
         add_flag --trials         "$IN_TRIALS"
 
-        # Word-split deliberately: these are additional flags, not one argument.
+        append_json_array() {
+          local label="$1" json="$2" item
+          if [ -z "$json" ]; then
+            return
+          fi
+          if ! jq -e 'type == "array" and all(.[]; type == "string")' >/dev/null <<< "$json"; then
+            echo "::error::$label must be a JSON array of strings"
+            exit 3
+          fi
+          while IFS= read -r item; do
+            args+=("$item")
+          done < <(jq -r '.[]' <<< "$json")
+        }
+
         if [ -n "$IN_ARGS" ]; then
-          read -r -a extra <<< "$IN_ARGS"
-          args+=("${extra[@]}")
+          append_json_array args "$IN_ARGS"
         fi
         if [ -n "$IN_COMMAND" ]; then
-          read -r -a cmd <<< "$IN_COMMAND"
-          args+=(-- "${cmd[@]}")
+          args+=(--)
+          append_json_array command "$IN_COMMAND"
         fi
 
         shutdowncheck "${args[@]}" > /dev/null
@@ -145,10 +212,9 @@ runs:
           echo "report-path=$report"
         } >> "$GITHUB_OUTPUT"
 
-        # Exit codes 3, 4 and 5 mean the tool never ran the experiment. There is
-        # nothing to summarise, and emitting a verdict here would be reporting
-        # one that nobody measured.
-        if [ ! -s "$recording" ]; then
+        # Exit codes 3, 4 and 5 mean the tool never completed the experiment.
+        # There is no report to publish, and inventing one would be worse.
+        if [ ! -s "$report" ]; then
           {
             echo "verdict=INCONCLUSIVE"
             echo "score="
@@ -158,8 +224,18 @@ runs:
           exit "$code"
         fi
 
-        shutdowncheck analyze "$recording" --format json --no-color > "$report"
-        shutdowncheck analyze "$recording" --format markdown --no-color > "$summary"
+        if ! jq -e '
+          (.verdict == "PASS" or .verdict == "FAIL" or .verdict == "INCONCLUSIVE") and
+          (.score.value | type == "number")
+        ' "$report" >/dev/null; then
+          {
+            echo "verdict=INCONCLUSIVE"
+            echo "score="
+            echo "report-written=false"
+          } >> "$GITHUB_OUTPUT"
+          echo "::error::shutdowncheck produced an invalid JSON report"
+          exit 5
+        fi
 
         verdict=$(jq -r '.verdict // "UNKNOWN"' "$report")
         score=$(jq -r '.score.value // empty' "$report")
@@ -169,6 +245,19 @@ runs:
           echo "report-written=true"
         } >> "$GITHUB_OUTPUT"
 
+        {
+          printf '## ShutdownCheck: %s\n\n' "$verdict"
+          printf '**Score %s/100**\n\n' "$score"
+          jq -r '
+            if (.findings | length) == 0 then
+              "No shutdown defects were detected."
+            else
+              "| Severity | Finding | Summary |\n| --- | --- | --- |\n" +
+              ([.findings[] | "| \(.severity) | `\(.id)` \(.name) | \(.summary | gsub("\\|"; "\\\\|")) |"] | join("\n"))
+            end
+          ' "$report"
+        } > "$summary"
+
         cat "$summary" >> "$GITHUB_STEP_SUMMARY"
         exit "$code"
       continue-on-error: true
@@ -177,7 +266,7 @@ runs:
       # Gated on an explicit output rather than hashFiles, which only resolves
       # paths under the workspace and would silently never match here.
       if: inputs.upload-artifact == 'true' && steps.check.outputs.report-written == 'true'
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
       with:
         name: ${{ inputs.artifact-name }}
         path: ${{ runner.temp }}/shutdowncheck-report.json
@@ -185,7 +274,7 @@ runs:
 
     - name: Comment on the pull request
       if: inputs.comment-on-pr == 'true' && github.event_name == 'pull_request' && steps.check.outputs.report-written == 'true'
-      uses: actions/github-script@v7
+      uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
       env:
         VERDICT: ${{ steps.check.outputs.verdict }}
         SCORE: ${{ steps.check.outputs.score }}
@@ -203,8 +292,10 @@ runs:
           const { owner, repo } = context.repo;
           const issue_number = context.issue.number;
 
-          const existing = await github.rest.issues.listComments({ owner, repo, issue_number });
-          const previous = existing.data.find(c => c.body && c.body.includes(marker));
+          const existing = await github.paginate(github.rest.issues.listComments, {
+            owner, repo, issue_number, per_page: 100
+          });
+          const previous = existing.find(c => c.body && c.body.includes(marker));
 
           if (previous) {
             await github.rest.issues.updateComment({ owner, repo, comment_id: previous.id, body: content });
@@ -221,7 +312,16 @@ runs:
       run: |
         set -euo pipefail
         echo "verdict: ${VERDICT:-unknown} (exit ${CODE:-unknown})"
+        case "$FAIL_ON_ERROR" in
+          true|false) ;;
+          *) echo "::error::fail-on-error must be either true or false"; exit 3 ;;
+        esac
 
+        # fail-on-error controls findings only. Inconclusive and operational
+        # failures cannot be converted into a green check.
+        if [ "${CODE:-5}" -ge 2 ]; then
+          exit "${CODE:-5}"
+        fi
         if [ "$FAIL_ON_ERROR" != "true" ]; then
           echo "fail-on-error is false, so the result is reported but not gated"
           exit 0
