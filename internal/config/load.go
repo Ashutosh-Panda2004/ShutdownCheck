@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/url"
 	"os"
 	"sort"
@@ -13,7 +14,21 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/shutdowncheck/shutdowncheck/internal/analyze"
+	"github.com/shutdowncheck/shutdowncheck/internal/probe"
+	"github.com/shutdowncheck/shutdowncheck/internal/redact"
 	"github.com/shutdowncheck/shutdowncheck/internal/target"
+)
+
+// Configuration limits prevent a small YAML file from amplifying into
+// excessive validation output or per-dispatch scheduler work.
+const (
+	MaxConfigBytes        = 4 << 20
+	MaxScenarios          = 100
+	MaxRequestDefinitions = 100
+	MaxHeadersPerRequest  = 100
+	MaxCommandArgs        = 1_024
+	MaxSignatureOverrides = 100
+	maxValidationProblems = 100
 )
 
 // Problem is one validation failure, located by its path in the config file.
@@ -42,6 +57,13 @@ func (p Problems) Error() string {
 }
 
 func (p *Problems) add(path, format string, args ...any) {
+	if len(*p) >= maxValidationProblems {
+		return
+	}
+	if len(*p) == maxValidationProblems-1 {
+		*p = append(*p, Problem{Path: "configuration", Msg: "additional validation problems omitted"})
+		return
+	}
 	*p = append(*p, Problem{Path: path, Msg: fmt.Sprintf(format, args...)})
 }
 
@@ -50,9 +72,18 @@ var ErrNoScenarios = errors.New("config defines no scenarios")
 
 // Load reads and validates a config file.
 func Load(path string) (*File, error) {
-	data, err := os.ReadFile(path) // #nosec G304 -- the path is supplied by the operator running the tool
+	f, err := os.Open(path) // #nosec G304 -- the path is supplied by the operator running the tool
 	if err != nil {
 		return nil, fmt.Errorf("read config %s: %w", path, err)
+	}
+	defer func() { _ = f.Close() }()
+
+	data, err := io.ReadAll(io.LimitReader(f, MaxConfigBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("read config %s: %w", path, err)
+	}
+	if len(data) > MaxConfigBytes {
+		return nil, fmt.Errorf("read config %s: file exceeds the %d-byte limit", path, MaxConfigBytes)
 	}
 
 	file, err := Parse(data)
@@ -67,6 +98,10 @@ func Load(path string) (*File, error) {
 // Unknown fields are rejected rather than ignored: a silently-misspelled gate
 // threshold would leave a CI job reporting success while checking nothing.
 func Parse(data []byte) (*File, error) {
+	if len(data) > MaxConfigBytes {
+		return nil, fmt.Errorf("configuration exceeds the %d-byte limit", MaxConfigBytes)
+	}
+
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
 
@@ -76,6 +111,13 @@ func Parse(data []byte) (*File, error) {
 			return nil, ErrNoScenarios
 		}
 		return nil, fmt.Errorf("parse yaml: %w", err)
+	}
+	var trailing any
+	if err := dec.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return nil, errors.New("parse yaml: multiple documents are not allowed")
+		}
+		return nil, fmt.Errorf("parse trailing yaml: %w", err)
 	}
 
 	if err := file.Validate(); err != nil {
@@ -100,13 +142,23 @@ func (f *File) Validate() error {
 	}
 	validatePositiveInt(&problems, "defaults.ensure_in_flight", f.Defaults.EnsureInFlight)
 	validatePositiveInt(&problems, "defaults.trials", f.Defaults.Trials)
+	if f.Defaults.Trials != nil && *f.Defaults.Trials > MaxTrials {
+		problems.add("defaults.trials", "must not exceed %d, got %d", MaxTrials, *f.Defaults.Trials)
+	}
 	validatePositiveDuration(&problems, "defaults.grace_period", f.Defaults.GracePeriod)
 
 	if len(f.Scenarios) == 0 {
 		problems.add("scenarios", "no scenarios defined; add at least one under `scenarios:`")
 	}
+	if len(f.Scenarios) > MaxScenarios {
+		problems.add("scenarios", "must not define more than %d scenarios, got %d", MaxScenarios, len(f.Scenarios))
+	}
 
-	for _, name := range sortedKeys(f.Scenarios) {
+	names := sortedKeys(f.Scenarios)
+	if len(names) > MaxScenarios {
+		names = names[:MaxScenarios]
+	}
+	for _, name := range names {
 		path := "scenarios." + name
 		scenario := f.Scenarios[name]
 		if scenario == nil {
@@ -125,8 +177,11 @@ func (f *File) Validate() error {
 
 func (s *Scenario) validate(path string, problems *Problems) {
 	s.Target.validate(path+".target", problems)
-	s.Probe.validate(path+".probe", problems)
+	s.Probe.validate(path+".probe", problems, s.Target.Docker != "")
 	s.Load.validate(path+".load", problems)
+	if s.Load.RPS != nil && s.Probe.SlowURL != "" {
+		problems.add(path+".probe.slow_url", "requires ensure_in_flight calibration and cannot be combined with fixed rps")
+	}
 	s.Termination.validate(path+".termination", problems)
 	s.Gate.validate(path+".gate", problems)
 }
@@ -153,8 +208,11 @@ func (t TargetSpec) validate(path string, problems *Problems) {
 	if t.PID < 0 {
 		problems.add(path+".pid", "must be positive, got %d", t.PID)
 	}
-	if t.PID == 1 {
-		problems.add(path+".pid", "refusing to target PID 1; signalling the init process would take down the host or container")
+	if len(t.Command) > MaxCommandArgs {
+		problems.add(path+".command", "must not contain more than %d arguments, got %d", MaxCommandArgs, len(t.Command))
+	}
+	if len(t.Command) > 0 && strings.TrimSpace(t.Command[0]) == "" {
+		problems.add(path+".command[0]", "executable must not be blank")
 	}
 	if t.Docker != "" && !validContainerRef(t.Docker) {
 		problems.add(path+".docker", "%q is not a valid container name or id", t.Docker)
@@ -164,8 +222,11 @@ func (t TargetSpec) validate(path string, problems *Problems) {
 		if t.Ready.URL == "" && t.Ready.Port == 0 {
 			problems.add(path+".ready", "set `url` or `port` so the tool knows when the target has started")
 		}
+		if t.Ready.URL != "" && t.Ready.Port != 0 {
+			problems.add(path+".ready", "set either `url` or `port`, not both")
+		}
 		if t.Ready.URL != "" {
-			validateHTTPURL(problems, path+".ready.url", t.Ready.URL)
+			validateHTTPURL(problems, path+".ready.url", t.Ready.URL, t.Docker != "")
 		}
 		if t.Ready.Port < 0 || t.Ready.Port > 65535 {
 			problems.add(path+".ready.port", "must be between 1 and 65535, got %d", t.Ready.Port)
@@ -174,48 +235,80 @@ func (t TargetSpec) validate(path string, problems *Problems) {
 	}
 }
 
-func (p ProbeSpec) validate(path string, problems *Problems) {
+func (p ProbeSpec) validate(path string, problems *Problems, allowPathOnly bool) {
 	if len(p.Requests) == 0 {
 		problems.add(path+".requests", "no requests defined; add at least one with a `url`")
 		return
 	}
+	if len(p.Requests) > MaxRequestDefinitions {
+		problems.add(path+".requests", "must not contain more than %d definitions, got %d", MaxRequestDefinitions, len(p.Requests))
+	}
 
-	totalWeight := 0
-	for i, req := range p.Requests {
+	hasPositiveWeight := false
+	requests := p.Requests
+	if len(requests) > MaxRequestDefinitions {
+		requests = requests[:MaxRequestDefinitions]
+	}
+	for i, req := range requests {
 		reqPath := fmt.Sprintf("%s.requests[%d]", path, i)
 
 		if req.URL == "" {
 			problems.add(reqPath+".url", "missing")
 		} else {
-			validateHTTPURL(problems, reqPath+".url", req.URL)
+			validateHTTPURL(problems, reqPath+".url", req.URL, allowPathOnly)
 		}
 		if req.Weight < 0 {
 			problems.add(reqPath+".weight", "must not be negative, got %d", req.Weight)
 		}
-		totalWeight += req.Weight
+		if req.Weight > 0 {
+			hasPositiveWeight = true
+		}
 
 		if req.Body != "" && req.BodyFile != "" {
 			problems.add(reqPath, "set either `body` or `body_file`, not both")
 		}
-		if req.Method != "" && strings.ToUpper(req.Method) != req.Method {
-			problems.add(reqPath+".method", "must be upper case, got %q", req.Method)
+		if req.Method != "" {
+			if strings.ToUpper(req.Method) != req.Method {
+				problems.add(reqPath+".method", "must be upper case, got %q", redact.Text(req.Method))
+			}
+			if !probe.ValidMethod(req.Method) {
+				problems.add(reqPath+".method", "must be a valid HTTP token")
+			}
 		}
-		for name := range req.Headers {
-			if strings.TrimSpace(name) == "" {
-				problems.add(reqPath+".headers", "header names must not be blank")
+		if len(req.Headers) > MaxHeadersPerRequest {
+			problems.add(reqPath+".headers", "must not contain more than %d headers, got %d", MaxHeadersPerRequest, len(req.Headers))
+		}
+		headerNames := map[string]string{}
+		headerKeys := sortedKeys(req.Headers)
+		if len(headerKeys) > MaxHeadersPerRequest {
+			headerKeys = headerKeys[:MaxHeadersPerRequest]
+		}
+		for _, name := range headerKeys {
+			value := req.Headers[name]
+			if !probe.ValidHeaderName(name) {
+				problems.add(reqPath+".headers", "contains an invalid header name")
+			}
+			if !probe.ValidHeaderValue(value) {
+				problems.add(reqPath+".headers", "header values must not contain control characters")
+			}
+			folded := strings.ToLower(name)
+			if previous, exists := headerNames[folded]; exists {
+				problems.add(reqPath+".headers", "contains duplicate names %q and %q that differ only by case", previous, name)
+			} else {
+				headerNames[folded] = name
 			}
 		}
 	}
 
-	if len(p.Requests) > 1 && totalWeight == 0 {
+	if len(p.Requests) > 1 && !hasPositiveWeight {
 		problems.add(path+".requests", "every weight is zero, so no request would ever be sent")
 	}
 
 	if p.ReadinessURL != "" {
-		validateHTTPURL(problems, path+".readiness_url", p.ReadinessURL)
+		validateHTTPURL(problems, path+".readiness_url", p.ReadinessURL, allowPathOnly)
 	}
 	if p.SlowURL != "" {
-		validateHTTPURL(problems, path+".slow_url", p.SlowURL)
+		validateHTTPURL(problems, path+".slow_url", p.SlowURL, allowPathOnly)
 	}
 }
 
@@ -223,11 +316,17 @@ func (l LoadSpec) validate(path string, problems *Problems) {
 	if l.RPS != nil && l.EnsureInFlight != nil {
 		problems.add(path, "set either `rps` or `ensure_in_flight`; a fixed rate disables calibration, so both together are contradictory")
 	}
-	if l.RPS != nil && *l.RPS <= 0 {
+	if l.RPS != nil && (!finite(*l.RPS) || *l.RPS <= 0) {
 		problems.add(path+".rps", "must be positive, got %v", *l.RPS)
 	}
-	if l.MaxRPS != nil && *l.MaxRPS <= 0 {
+	if l.MaxRPS != nil && (!finite(*l.MaxRPS) || *l.MaxRPS <= 0) {
 		problems.add(path+".max_rps", "must be positive, got %v", *l.MaxRPS)
+	}
+	if l.RPS != nil && *l.RPS > MaxRPS {
+		problems.add(path+".rps", "must not exceed %v, got %v", MaxRPS, *l.RPS)
+	}
+	if l.MaxRPS != nil && *l.MaxRPS > MaxRPS {
+		problems.add(path+".max_rps", "must not exceed %v, got %v", MaxRPS, *l.MaxRPS)
 	}
 	if l.RPS != nil && l.MaxRPS != nil && *l.RPS > *l.MaxRPS {
 		problems.add(path+".rps", "%v exceeds max_rps %v", *l.RPS, *l.MaxRPS)
@@ -235,6 +334,9 @@ func (l LoadSpec) validate(path string, problems *Problems) {
 
 	validatePositiveInt(problems, path+".ensure_in_flight", l.EnsureInFlight)
 	validatePositiveInt(problems, path+".concurrency_cap", l.ConcurrencyCap)
+	if l.ConcurrencyCap != nil && *l.ConcurrencyCap > MaxConcurrencyCap {
+		problems.add(path+".concurrency_cap", "must not exceed %d, got %d", MaxConcurrencyCap, *l.ConcurrencyCap)
+	}
 	validatePositiveDuration(problems, path+".warmup", l.Warmup)
 	validatePositiveDuration(problems, path+".steady", l.Steady)
 	validatePositiveDuration(problems, path+".request_timeout", l.RequestTimeout)
@@ -258,7 +360,7 @@ func (t TerminationSpec) validate(path string, problems *Problems) {
 }
 
 func (g GateSpec) validate(path string, problems *Problems) {
-	if g.MaxInFlightDropPct != nil && (*g.MaxInFlightDropPct < 0 || *g.MaxInFlightDropPct > 100) {
+	if g.MaxInFlightDropPct != nil && (!finite(*g.MaxInFlightDropPct) || *g.MaxInFlightDropPct < 0 || *g.MaxInFlightDropPct > 100) {
 		problems.add(path+".max_inflight_drop_pct", "must be between 0 and 100, got %v", *g.MaxInFlightDropPct)
 	}
 	if g.MinScore != nil && (*g.MinScore < 0 || *g.MinScore > 100) {
@@ -266,6 +368,15 @@ func (g GateSpec) validate(path string, problems *Problems) {
 	}
 	validatePositiveDuration(problems, path+".max_shutdown_time", g.MaxShutdownTime)
 	validatePositiveInt(problems, path+".trials", g.Trials)
+	if g.Trials != nil && *g.Trials > MaxTrials {
+		problems.add(path+".trials", "must not exceed %d, got %d", MaxTrials, *g.Trials)
+	}
+	if len(g.FailOn) > MaxSignatureOverrides {
+		problems.add(path+".fail_on", "must not contain more than %d entries", MaxSignatureOverrides)
+	}
+	if len(g.Ignore) > MaxSignatureOverrides {
+		problems.add(path+".ignore", "must not contain more than %d entries", MaxSignatureOverrides)
+	}
 
 	// Typos here are dangerous: an unrecognised id in `ignore` would silently
 	// fail to suppress anything, and in `fail_on` would silently fail to gate.
@@ -283,7 +394,14 @@ func (g GateSpec) validate(path string, problems *Problems) {
 	}
 }
 
+func finite(value float64) bool {
+	return !math.IsNaN(value) && !math.IsInf(value, 0)
+}
+
 func validateSignatureIDs(problems *Problems, path string, ids []string) {
+	if len(ids) > MaxSignatureOverrides {
+		ids = ids[:MaxSignatureOverrides]
+	}
 	for _, id := range ids {
 		if _, ok := analyze.Lookup(analyze.SignatureID(id)); !ok {
 			problems.add(path, "unknown signature %q; see `shutdowncheck explain` for the catalogue", id)
@@ -291,18 +409,23 @@ func validateSignatureIDs(problems *Problems, path string, ids []string) {
 	}
 }
 
-func validateHTTPURL(problems *Problems, path, raw string) {
+func validateHTTPURL(problems *Problems, path, raw string, allowPathOnly ...bool) {
 	parsed, err := url.Parse(raw)
 	if err != nil {
-		problems.add(path, "%q is not a valid URL: %v", raw, err)
+		problems.add(path, "%q is not a valid URL: %s", redact.URL(raw), redact.Message(err.Error()))
+		return
+	}
+	if len(allowPathOnly) > 0 && allowPathOnly[0] && parsed.Scheme == "" &&
+		parsed.Host == "" && strings.HasPrefix(parsed.Path, "/") &&
+		!strings.HasPrefix(raw, "//") {
 		return
 	}
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		problems.add(path, "%q must use http or https", raw)
+		problems.add(path, "%q must use http or https", redact.URL(raw))
 		return
 	}
 	if parsed.Host == "" {
-		problems.add(path, "%q has no host", raw)
+		problems.add(path, "%q has no host", redact.URL(raw))
 	}
 }
 
@@ -315,6 +438,9 @@ func validatePositiveInt(problems *Problems, path string, v *int) {
 func validatePositiveDuration(problems *Problems, path string, d *Duration) {
 	if d != nil && d.Duration() <= 0 {
 		problems.add(path, "must be positive, got %s", d)
+	}
+	if d != nil && d.Duration() > MaxOperationalDuration {
+		problems.add(path, "must not exceed %s, got %s", MaxOperationalDuration, d)
 	}
 }
 

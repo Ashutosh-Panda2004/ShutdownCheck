@@ -2,6 +2,7 @@ package config
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -126,6 +127,28 @@ scenarios:
 	}
 }
 
+func TestParseRejectsTrailingYAMLDocument(t *testing.T) {
+	input := `
+version: 1
+scenarios:
+	api:
+		target:
+			command: ["./api"]
+		probe:
+			requests:
+				- url: http://localhost:8080/
+---
+version: 1
+scenarios:
+	ignored:
+		target:
+			command: ["./other"]
+`
+	if _, err := Parse([]byte(input)); err == nil {
+		t.Fatal("a second YAML document was silently ignored")
+	}
+}
+
 func TestParseRejectsWrongVersion(t *testing.T) {
 	for _, input := range []string{
 		"scenarios:\n  a:\n    target:\n      pid: 5\n",
@@ -202,12 +225,6 @@ func TestTargetValidation(t *testing.T) {
       requests:
         - url: http://x/
 `,
-		"pid 1": `    target:
-      pid: 1
-    probe:
-      requests:
-        - url: http://x/
-`,
 		"bad container ref": `    target:
       docker: "api; rm -rf /"
     probe:
@@ -220,6 +237,15 @@ func TestTargetValidation(t *testing.T) {
     probe:
       requests:
         - url: http://x/
+`,
+		"ready with url and port": `    target:
+			command: ["./api"]
+			ready:
+				url: http://x/ready
+				port: 8080
+		probe:
+			requests:
+				- url: http://x/
 `,
 	}
 
@@ -266,6 +292,38 @@ func TestProbeValidation(t *testing.T) {
         - url: http://x/
           method: post
 `,
+		"invalid method token": `    target:
+			pid: 5
+		probe:
+			requests:
+				- url: http://x/
+					method: "BAD METHOD"
+`,
+		"invalid header name": `    target:
+			pid: 5
+		probe:
+			requests:
+				- url: http://x/
+					headers:
+						"Bad Header": value
+`,
+		"invalid header value": `    target:
+			pid: 5
+		probe:
+			requests:
+				- url: http://x/
+					headers:
+						X-Test: "bad\u0000value"
+`,
+		"duplicate header case": `    target:
+			pid: 5
+		probe:
+			requests:
+				- url: http://x/
+					headers:
+						X-Trace: first
+						x-trace: second
+`,
 		"all weights zero": `    target:
       pid: 5
     probe:
@@ -286,6 +344,22 @@ func TestProbeValidation(t *testing.T) {
 	}
 }
 
+func TestURLValidationDoesNotLeakCredentials(t *testing.T) {
+	const secret = "config-secret-must-not-appear"
+	err := scenarioWith(t, `    target:
+      pid: 5
+    probe:
+      requests:
+        - url: ftp://user:`+secret+`@example.test/path?token=`+secret+`
+`)
+	if err == nil {
+		t.Fatal("expected URL validation to fail")
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatalf("validation error leaked credentials: %v", err)
+	}
+}
+
 func TestLoadValidation(t *testing.T) {
 	base := `    target:
       pid: 5
@@ -297,7 +371,12 @@ func TestLoadValidation(t *testing.T) {
 	cases := map[string]string{
 		"rps with ensure_in_flight": "      rps: 100\n      ensure_in_flight: 20\n",
 		"negative rps":              "      rps: -1\n",
+		"not-a-number rps":          "      rps: .nan\n",
+		"infinite max rps":          "      max_rps: .inf\n",
+		"excessive rps":             "      rps: 1000001\n",
 		"rps above max":             "      rps: 5000\n      max_rps: 100\n",
+		"excessive concurrency":     "      concurrency_cap: 65537\n",
+		"excessive duration":        "      steady: 25h\n",
 		"zero warmup":               "      warmup: 0s\n",
 	}
 
@@ -307,6 +386,21 @@ func TestLoadValidation(t *testing.T) {
 				t.Fatalf("expected a validation error for %s", name)
 			}
 		})
+	}
+}
+
+func TestFixedRPSRejectsSlowURL(t *testing.T) {
+	err := scenarioWith(t, `    target:
+			pid: 5
+		probe:
+			slow_url: http://x/slow
+			requests:
+				- url: http://x/
+		load:
+			rps: 100
+`)
+	if err == nil {
+		t.Fatal("fixed rps with slow_url was accepted")
 	}
 }
 
@@ -377,10 +471,12 @@ func TestGateRangeValidation(t *testing.T) {
     gate:
 `
 	cases := map[string]string{
-		"drop pct too high": "      max_inflight_drop_pct: 101\n",
-		"score too high":    "      min_score: 101\n",
-		"negative score":    "      min_score: -1\n",
-		"zero trials":       "      trials: 0\n",
+		"drop pct too high":     "      max_inflight_drop_pct: 101\n",
+		"drop pct not a number": "      max_inflight_drop_pct: .nan\n",
+		"score too high":        "      min_score: 101\n",
+		"negative score":        "      min_score: -1\n",
+		"zero trials":           "      trials: 0\n",
+		"excessive trials":      "      trials: 101\n",
 	}
 
 	for name, extra := range cases {
@@ -418,6 +514,47 @@ scenarios:
 	if len(problems) < 4 {
 		t.Errorf("reported %d problems, want at least 4:\n%v", len(problems), err)
 	}
+}
+
+func TestValidationComplexityLimits(t *testing.T) {
+	t.Run("problem count", func(t *testing.T) {
+		var problems Problems
+		for i := 0; i < maxValidationProblems*2; i++ {
+			problems.add("field", "problem %d", i)
+		}
+		if len(problems) != maxValidationProblems {
+			t.Fatalf("retained %d problems, want %d", len(problems), maxValidationProblems)
+		}
+		if !strings.Contains(problems[len(problems)-1].Msg, "omitted") {
+			t.Errorf("final problem does not explain truncation: %q", problems[len(problems)-1].Msg)
+		}
+	})
+
+	t.Run("request definitions", func(t *testing.T) {
+		requests := make([]RequestSpec, MaxRequestDefinitions+1)
+		for i := range requests {
+			requests[i] = RequestSpec{URL: "http://x/", Weight: 1}
+		}
+		file := &File{Version: SchemaVersion, Scenarios: map[string]*Scenario{
+			"api": {Target: TargetSpec{PID: 5}, Probe: ProbeSpec{Requests: requests}},
+		}}
+		if err := file.Validate(); err == nil || !strings.Contains(err.Error(), "definitions") {
+			t.Fatalf("request-definition limit error = %v", err)
+		}
+	})
+
+	t.Run("headers", func(t *testing.T) {
+		headers := make(map[string]string, MaxHeadersPerRequest+1)
+		for i := 0; i <= MaxHeadersPerRequest; i++ {
+			headers[fmt.Sprintf("X-Test-%d", i)] = "value"
+		}
+		file := &File{Version: SchemaVersion, Scenarios: map[string]*Scenario{
+			"api": {Target: TargetSpec{PID: 5}, Probe: ProbeSpec{Requests: []RequestSpec{{URL: "http://x/", Headers: headers}}}},
+		}}
+		if err := file.Validate(); err == nil || !strings.Contains(err.Error(), "headers") {
+			t.Fatalf("header limit error = %v", err)
+		}
+	})
 }
 
 func TestResolveSingleScenarioWithoutName(t *testing.T) {
@@ -503,6 +640,35 @@ scenarios:
 	}
 	if got := resolved.Probe.Requests[0].Weight; got != 1 {
 		t.Errorf("a lone request must get a usable weight, got %d", got)
+	}
+}
+
+func TestResolveCanonicalizesAndCopiesHeaders(t *testing.T) {
+	file, err := Parse([]byte(`
+version: 1
+scenarios:
+  api:
+    target:
+      pid: 5
+    probe:
+      requests:
+        - url: http://x/
+          headers:
+            x-trace-id: original
+`))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	resolved, err := file.Resolve("api")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if got := resolved.Probe.Requests[0].Headers["X-Trace-Id"]; got != "original" {
+		t.Errorf("canonical header = %q, want original", got)
+	}
+	resolved.Probe.Requests[0].Headers["X-Trace-Id"] = "changed"
+	if got := file.Scenarios["api"].Probe.Requests[0].Headers["x-trace-id"]; got != "original" {
+		t.Errorf("resolved header mutation changed parsed config to %q", got)
 	}
 }
 

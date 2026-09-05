@@ -5,6 +5,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/shutdowncheck/shutdowncheck/internal/analyze"
 )
 
 // Built-in defaults, per spec section 11. They are deliberately chosen so that
@@ -15,13 +17,22 @@ const (
 	DefaultEnsureInFlight = 20
 	DefaultMaxRPS         = 2000.0
 	DefaultConcurrencyCap = 512
-	DefaultWarmup         = 3 * time.Second
-	DefaultSteady         = 5 * time.Second
-	DefaultRequestTimeout = 10 * time.Second
-	DefaultSignal         = "TERM"
-	DefaultTrials         = 1
-	DefaultListenerProbe  = 20 * time.Millisecond
-	DefaultMethod         = "GET"
+	// MaxRPS bounds scheduler work even when a fixed rate is supplied.
+	MaxRPS = 1_000_000.0
+	// MaxConcurrencyCap prevents a malformed configuration from requesting an
+	// impossibly large socket semaphore allocation.
+	MaxConcurrencyCap = 65_536
+	// MaxOperationalDuration keeps duration arithmetic representable and rejects
+	// configurations that cannot be useful as a shutdown check.
+	MaxOperationalDuration = analyze.MaxPolicyDuration
+	MaxTrials              = 100
+	DefaultWarmup          = 3 * time.Second
+	DefaultSteady          = 5 * time.Second
+	DefaultRequestTimeout  = 10 * time.Second
+	DefaultSignal          = "TERM"
+	DefaultTrials          = 1
+	DefaultListenerProbe   = 20 * time.Millisecond
+	DefaultMethod          = "GET"
 )
 
 // SchemaVersion is the only supported config file version.

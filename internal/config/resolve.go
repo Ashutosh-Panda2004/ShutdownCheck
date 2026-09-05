@@ -2,11 +2,13 @@ package config
 
 import (
 	"fmt"
+	"net/http"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/shutdowncheck/shutdowncheck/internal/analyze"
+	"github.com/shutdowncheck/shutdowncheck/internal/redact"
 	"github.com/shutdowncheck/shutdowncheck/pkg/schema"
 )
 
@@ -20,8 +22,19 @@ type Resolved struct {
 	Traffic           Traffic
 	Termination       Termination
 	Policy            analyze.Policy
+	PolicyOverrides   PolicyOverrides
 	Trials            int
 	CaptureTargetLogs bool
+}
+
+// PolicyOverrides records which values came from configuration rather than a
+// profile default. A later --profile may replace defaults, but never something
+// the user explicitly configured.
+type PolicyOverrides struct {
+	ProfileWasAuto bool
+	GracePeriod    bool
+	AcceptWindow   bool
+	Severities     map[analyze.SignatureID]schema.Severity
 }
 
 // Target is the resolved target selection.
@@ -41,6 +54,7 @@ type Target struct {
 // Ready describes how to detect that a spawned target has started.
 type Ready struct {
 	URL     string
+	Addr    string
 	Port    int
 	Timeout time.Duration
 }
@@ -123,6 +137,7 @@ func (f *File) Resolve(name string) (*Resolved, error) {
 		Target:            resolveTarget(scenario.Target),
 		Probe:             resolveProbe(scenario.Probe),
 		Traffic:           resolveTraffic(scenario.Load, f.Defaults),
+		PolicyOverrides:   resolvePolicyOverrides(scenario, f.Defaults),
 		Trials:            intOr(DefaultTrials, scenario.Gate.Trials, f.Defaults.Trials),
 		CaptureTargetLogs: boolOr(f.Defaults.CaptureTargetLogs, false),
 	}
@@ -146,7 +161,7 @@ func resolveTarget(spec TargetSpec) Target {
 	switch {
 	case len(spec.Command) > 0:
 		target.Kind = analyze.TargetCommand
-		target.Label = strings.Join(spec.Command, " ")
+		target.Label = redact.Argv(spec.Command)
 	case spec.Docker != "":
 		target.Kind = analyze.TargetDocker
 		target.Label = "docker(" + spec.Docker + ")"
@@ -193,12 +208,23 @@ func resolveProbe(spec ProbeSpec) Probe {
 			Weight:   weight,
 			URL:      req.URL,
 			Method:   method,
-			Headers:  req.Headers,
+			Headers:  canonicalHeaders(req.Headers),
 			Body:     req.Body,
 			BodyFile: req.BodyFile,
 		})
 	}
 	return probe
+}
+
+func canonicalHeaders(headers map[string]string) map[string]string {
+	if headers == nil {
+		return nil
+	}
+	out := make(map[string]string, len(headers))
+	for name, value := range headers {
+		out[http.CanonicalHeaderKey(name)] = value
+	}
+	return out
 }
 
 func resolveTraffic(spec LoadSpec, defaults Defaults) Traffic {
@@ -284,6 +310,27 @@ func resolvePolicy(scenario *Scenario, defaults Defaults, kind analyze.TargetKin
 	}
 
 	return policy, nil
+}
+
+func resolvePolicyOverrides(scenario *Scenario, defaults Defaults) PolicyOverrides {
+	name := scenario.Termination.Profile
+	if name == "" {
+		name = defaults.Profile
+	}
+
+	overrides := PolicyOverrides{
+		ProfileWasAuto: name == "" || analyze.Profile(name) == analyze.ProfileAuto,
+		GracePeriod:    scenario.Termination.GracePeriod != nil || defaults.GracePeriod != nil,
+		AcceptWindow:   scenario.Termination.AcceptWindow != nil,
+		Severities:     map[analyze.SignatureID]schema.Severity{},
+	}
+	for _, id := range scenario.Gate.Ignore {
+		overrides.Severities[analyze.SignatureID(id)] = schema.SeverityInfo
+	}
+	for _, id := range scenario.Gate.FailOn {
+		overrides.Severities[analyze.SignatureID(id)] = schema.SeverityError
+	}
+	return overrides
 }
 
 func sortedCopy(in []string) []string {
