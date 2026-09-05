@@ -15,7 +15,7 @@ $ shutdowncheck explain SC006
 
 | ID | Stage | Name | What it means |
 | --- | --- | --- | --- |
-| [SC000](SC000.md) | — | INSUFFICIENT_INFLIGHT | Too few requests were in flight when the signal landed. |
+| [SC000](SC000.md) | — | INSUFFICIENT_INFLIGHT | The run did not retain enough trustworthy baseline and in-flight evidence. |
 | [SC001](SC001.md) | S1 | SIGTERM_IGNORED | The process showed no reaction to the signal at all. |
 | [SC002](SC002.md) | S7 | SIGKILL_REQUIRED | The process was still alive when the grace period expired. |
 | [SC003](SC003.md) | S6 | IN_FLIGHT_DROPPED | Requests that were already being processed failed during shutdown. |

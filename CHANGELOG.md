@@ -45,8 +45,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - [The seven stages of correct termination](docs/seven-stages.md): the
   conceptual model every check maps onto, including why the usual graceful
   shutdown advice is wrong under Kubernetes.
-- `--max-records` caps recorded per-request events so a long run cannot exhaust
-  memory.
+- `--max-records` caps request evidence, with a larger derived budget for
+  connection and observer events. Any omitted verdict-bearing evidence forces
+  `INCONCLUSIVE`; captured logs have independent byte, line-length and line-count
+  caps.
 - Budget tests for the things spec section 19 promises: binary size, startup
   latency, direct dependency count, and verdict stability across repeated runs.
 - Release pipeline: GoReleaser builds linux, macOS and Windows on amd64 and
@@ -56,10 +58,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A checksum-verifying install script, a Homebrew tap, a Scoop manifest and a
   distroless multi-arch image on GHCR. The image doubles as its own broken demo
   service, so there is no second image to keep in step.
-- GitHub Action in `action/`, as a composite action so it adds no image to
-  anyone's supply chain. It records the run once and renders it twice, meaning
-  the service under test is terminated exactly once no matter how many
-  artifacts come out.
+- Root-discoverable GitHub Action, as a composite action so it adds no image to
+  anyone's supply chain. It publishes the original run's JSON report, requires
+  an exact binary version, and derives the summary from that same report.
 - One published page per failure signature under `docs/signatures/`, generated
   from the catalogue compiled into the binary. The website cannot drift from
   what the tool actually reports, and CI fails if it does.
@@ -118,7 +119,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   connection-layer forensics (reuse, `Connection: close`, and FIN vs RST
   termination), an error classifier that separates refused, reset, timeout, EOF,
   TLS and DNS failures, and independent readiness and raw-TCP listener probes.
-- `internal/load`: open-model traffic generator with a precomputed dispatch
+- `internal/load`: open-model traffic generator with a constant-memory dispatch
   schedule, bounded concurrency with measured back-pressure, deterministic
   weighted request selection, and Little's Law calibration that marks the run
   unachievable rather than silently running at the ceiling.
@@ -150,7 +151,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Governance: Apache-2.0 licence, contributing guide, code of conduct, security
   policy, issue templates (including a misdiagnosis template that collects the
   raw timeline) and a pull request template.
-- Architecture decision records ADR-0001 through ADR-0013 capturing the locked
+- Architecture decision records ADR-0001 through ADR-0015 capturing the locked
   decisions from the specification.
 
 ### Changed
@@ -176,6 +177,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A deep release-readiness audit closed false-PASS paths caused by incomplete
+  recordings, unhealthy pre-signal readiness/listener/load baselines, canceled
+  observer polls, and fixed-rate runs skipping warmup health checks.
+- NDJSON now rejects duplicate keys, unknown fields, invalid enum values,
+  impossible timestamps and oversized input. Versioned, sanitized analysis
+  context preserves custom gates, severity overrides, target/probe/load metadata
+  and multi-trial status for exact default replay.
+- The load generator no longer preallocates arrays proportional to
+  `rps * duration`; rates, durations, trials, concurrency, report width, request
+  bodies, Docker output and evidence retention all have explicit bounds.
+- Docker operations are pinned to the immutable container ID returned by
+  inspection. Published ports are restricted to validated TCP/IP bindings, and
+  Docker readiness ports resolve through the same pinned container state.
+- Spawned process cleanup now kills the owned process group even after its
+  parent exits, preventing orphan workers from surviving a run.
+- The GitHub Action no longer re-analyzes NDJSON and loses custom gates, cannot
+  reuse a stale report, rejects invalid gating booleans, paginates sticky-comment
+  lookup, and cannot silently install a moving `latest` binary.
+- CLI/config overrides that were accepted but ignored now reach runtime;
+  conflicting values and malformed methods, headers, URLs, Docker ports, PIDs
+  and numeric limits fail before the target is mutated.
+- Secret redaction now covers validation/readiness errors, composite query-key
+  names, URL fragments, Docker stderr and ANSI-obfuscated names. Terminal and
+  bidirectional controls cannot reach human or Markdown output.
+- JUnit and badge output can no longer present an inconclusive run as green.
+- Release workflows, tools and container bases are immutably pinned; the current
+  GoReleaser v2 configuration passes `goreleaser check` and all six release
+  archives, checksums, SBOMs and package-manager manifests build locally. Syft
+  is pinned to v1.51.1 in the hosted release workflow.
 - Two build artefacts had been committed by accident in earlier phases and are
   now removed and ignored.
 - The orphaned-listener fixture re-bound the port instead of inheriting the

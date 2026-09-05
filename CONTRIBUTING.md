@@ -27,10 +27,14 @@ make ci             # Linux / macOS
 Optional tools used by `make lint` and `make vuln`:
 
 ```console
-go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
-go install golang.org/x/vuln/cmd/govulncheck@latest
-go install github.com/securego/gosec/v2/cmd/gosec@latest
+go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2
+go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
+go install github.com/securego/gosec/v2/cmd/gosec@v2.29.0
 ```
+
+These pinned scanner releases require Go 1.25 or newer even though the project
+itself supports the minimum declared in `go.mod`. CI installs them with Go
+1.26.8; contributors on the minimum toolchain can rely on those CI jobs.
 
 Both build scripts skip these gracefully if they are not installed; CI runs them regardless.
 
@@ -62,7 +66,7 @@ These are non-negotiable and are checked in review:
 - Validate any externally-supplied identifier (container name, pod name) before it reaches argv.
 - Never let a secret reach a report, a log line or the NDJSON stream. Sensitive headers are redacted at the recording boundary.
 - TLS verification stays on unless the user explicitly passed `--insecure`.
-- Never signal PID <= 1 or shutdowncheck's own process group.
+- Never signal an invalid PID or shutdowncheck itself. PID 1 is permitted only through the explicit `--allow-unsafe-pid` opt-in for container-init use cases.
 
 Report vulnerabilities privately — see [SECURITY.md](SECURITY.md).
 

@@ -70,7 +70,7 @@ Phases 2 and 4 are independent of each other and can be reordered or interleaved
 - `internal/timeline`
   - `Event` union covering: stage transition, request start/end, connection open/reuse/close (with FIN/RST + `Connection: close`), readiness sample, listener-accept sample, signal sent, process exit, target log line.
   - `Clock` interface with `realClock` and a fully controllable `fakeClock` (monotonic offsets only).
-  - `Recorder`: concurrency-safe, non-blocking, bounded with reservoir sampling above `--max-records`.
+  - `Recorder`: concurrency-safe, non-blocking, bounded by `--max-records`; omitted verdict-bearing evidence makes the run inconclusive.
   - `Timeline` immutable snapshot + NDJSON encode/decode (round-trippable).
 - `pkg/schema` — the complete public report types matching spec §13, with `schema_version`, stable field ordering, and golden-file JSON tests.
 - `internal/config` — YAML model per spec §12, defaults, strict validation with actionable messages, `--scenario` selection, and `Policy` derivation (profile → accept window, severities, budgets).
@@ -116,7 +116,7 @@ Phases 2 and 4 are independent of each other and can be reordered or interleaved
   - `ProcessTarget` — attach by PID.
   - `CommandTarget` — spawn with argv only, own process group, capture stdout/stderr, guaranteed group kill on every exit path (including panic and tool `SIGINT`).
 - `WaitReady`: TCP port readiness and/or HTTP ready-URL readiness with timeout.
-- Signal delivery with **skew measurement** (flag the run low-confidence above 50ms skew).
+- Signal delivery with **skew measurement** (force `INCONCLUSIVE` above 50ms because phase attribution is no longer trustworthy).
 - `SIGKILL` escalation at grace expiry (`--enforce-sigkill`).
 - Exit detection: exit code, terminating signal, time-to-exit.
 - Post-exit **port-still-bound** detection (catches orphaned children → `SC012`).
@@ -167,7 +167,7 @@ Phases 2 and 4 are independent of each other and can be reordered or interleaved
 - `internal/report` renderers:
   - **Human** — the timeline visualisation from spec §3.3 (terminal-width aware, colour with TTY/`NO_COLOR` detection), phase table, connection table, findings with remediation.
   - **JSON** (versioned schema), **JUnit XML** (one `<testcase>` per signature), **Markdown** (GitHub job summary / PR comment), **NDJSON**, **SVG badge**.
-- `internal/cli` (cobra): `run`, `explain <SCxxx>`, `validate`, `version`.
+- `internal/cli` (standard library `flag`): `run`, `analyze`, `demo`, `explain <SCxxx>`, `validate`, `version`.
 - Flag → config → defaults precedence, `--scenario`, full help text for every flag in spec §11.
 - Exit code taxonomy per spec §9.3, verified by test.
 - Golden-file tests for every renderer.
@@ -239,7 +239,7 @@ Phases 2 and 4 are independent of each other and can be reordered or interleaved
 - `go install` reports a real version: the binary reads `debug.ReadBuildInfo` when no ldflags were applied, so an installed build no longer calls itself `dev`.
 - Checksum-verifying install script, Homebrew tap and Scoop manifest.
 - Distroless multi-arch image published to GHCR. The same image doubles as its own broken demo service, so no second image has to be maintained.
-- **GitHub Action** in `action/` as a composite action, so it adds no image to a user's supply chain. Records once as NDJSON and renders twice, meaning the service under test is terminated exactly once.
+- **GitHub Action** at repository-root `action.yml` as a composite action, so it adds no image to a user's supply chain. The original run emits the JSON artifact and the summary is derived from it, so custom gates cannot drift during replay.
 - `shutdowncheck demo`, per [ADR-0013](docs/adr/0013-demo-subcommand.md) and [ADR-0015](docs/adr/0015-demo-without-recorded-fallback.md).
 - One published page per signature under `docs/signatures/`, generated from the catalogue compiled into the binary so the website cannot drift from what the tool reports.
 - README: install matrix, verification instructions, CI snippet, honest status banner.
@@ -249,14 +249,19 @@ Phases 2 and 4 are independent of each other and can be reordered or interleaved
 - `go install` verified locally, including version reporting.
 
 **Deviations from plan**
-- GoReleaser could not be run locally: v2 now requires Go 1.27, which Windows Defender quarantines on this machine. Rather than leave the config unchecked, CI gained a `release-config` job that runs `goreleaser check` **and** a full snapshot build on every push, so a broken release pipeline fails on the pull request that broke it rather than at tag time.
+- GoReleaser v2.17.0 is the newest compatible pinned release for the available
+  Go 1.26.8 toolchain. `goreleaser check`, a six-target snapshot build and a
+  non-publishing archive release have all succeeded locally. CI repeats config
+  validation and the snapshot build on every push.
 - The demo's recorded fallback was dropped ([ADR-0015](docs/adr/0015-demo-without-recorded-fallback.md)). A genuine recording cannot be produced on the platform that needs it, and synthesising one would be fabricated evidence in the one command whose job is to earn trust.
 - The docs site generator is deferred; the per-signature pages it would consume are generated and committed, which is the part that carries the value.
 - The demo GIF is deferred: it needs a real terminal recording on a machine that can run the demo.
 
-**Verified locally:** `go install` path, version injection from both ldflags and build info, the demo's platform refusal, the Action's JSON contract (pinned by test), signature page generation and drift detection.
+**Verified locally:** `go install` path, version injection from both ldflags and build info, the demo's platform refusal, Action/YAML/JSON contracts, signature page drift, GoReleaser config, all six release archives and SBOMs, archive contents, checksums, Homebrew/Scoop metadata, lint, vulnerability scans, fuzz targets and 80.9% aggregate coverage. SBOM generation uses checksum-verified Syft v1.51.1, matching the exact workflow pin.
 
-**Not verifiable locally:** GoReleaser execution, the release workflow, the install script, the container image, and the Action itself. All are exercised by CI on the next push.
+**Not verifiable locally:** POSIX installer execution, Docker image build/run,
+the hosted release workflow, and the Action in a real repository. This Windows
+host has no Docker, POSIX shell, C toolchain, Java or real Python runtime.
 
 **Still owed before v1.0:** the Action proven working in a throwaway repository, and `brew install`, the install script and the container image each verified on a clean machine. Written but unproven is not the same as done, and these carry over into Phase 9.
 
@@ -272,6 +277,10 @@ Phases 2 and 4 are independent of each other and can be reordered or interleaved
 - Redaction proven end to end, against a recording deliberately handed credentials by every route the tool records. Unit tests could not have caught the failure that mattered — a redaction helper that is correct but never called.
 - Budget tests: binary size, startup latency, direct dependency count, and verdict stability across repeated runs, with the fifty-iteration version behind `-stability` and run on main.
 - Documentation: [the seven stages explainer](docs/seven-stages.md), all eighteen signature pages generated from the catalogue, and a test that fails if any registered flag is missing from `--help`.
+- Deep release-readiness audit of runtime, parsers, resource bounds, redaction,
+  report semantics, Docker/process identity and cleanup, CLI/config precedence,
+  the root Action, immutable workflow inputs and GoReleaser. Every confirmed
+  defect has a focused regression.
 
 **Measured against spec §19**
 | Criterion | Budget | Actual |
@@ -281,7 +290,10 @@ Phases 2 and 4 are independent of each other and can be reordered or interleaved
 | Every signature in ≥ 2 languages | required | enforced by a build-failing guard |
 | Zero false PASS | required | asserted for every conformance mode |
 | Verdict stability | 50 runs | enforced on main; 6 runs per PR |
-| `go test -race`, staticcheck, gosec, govulncheck | clean | in CI |
+| Local `go test`, golangci-lint, gosec, govulncheck | clean | **passed** |
+| Aggregate coverage | informative | **80.9%** |
+| Linux/Darwin/Windows vet + release cross-build | required | **passed** |
+| `go test -race` and real POSIX/Docker conformance | clean | CI/external machine required |
 
 **Deviations from plan**
 - Two spec claims were corrected rather than implemented. Record capping **drops** with a recorded notice instead of reservoir sampling, because sampling would silently thin the requests around the signal — precisely the evidence every signature depends on. And the wall-clock ceiling exits `4`, not `5`: the likely cause is a target that never became ready, and reporting that as an internal error would send users to the issue tracker instead of to their own service.
@@ -289,7 +301,9 @@ Phases 2 and 4 are independent of each other and can be reordered or interleaved
 - Report schema bumped to `1.1` for the additive `probe.insecure` field, per [ADR-0009](docs/adr/0009-public-versioned-report-schema.md).
 
 **Not done — this is why the phase is not closed**
-- `v1.0.0` is **not** tagged. The release pipeline, install script, container image and GitHub Action have never been executed; they carry over from Phase 8 and are still written-but-unproven. Tagging a release whose publishing machinery has never run once would be exactly the kind of unearned confidence this project exists to argue against.
+- `v1.0.0` is **not** tagged. Local release construction is proven, but the
+  hosted publishing path, POSIX installer, pushed container image, package taps
+  and GitHub Action have not been exercised against a real repository.
 - Launch posts are deliberately not written until a release exists that someone can actually install.
 
 **To close Phase 9:** push to a real repository, let CI run every job, cut a `v0.9.0` pre-release to exercise the pipeline end to end, verify `brew`/`install.sh`/`go install`/the image on a clean machine, prove the Action in a throwaway repo — then tag `v1.0.0`.

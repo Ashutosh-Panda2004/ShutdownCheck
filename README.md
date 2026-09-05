@@ -48,7 +48,7 @@ is in [docs/seven-stages.md](docs/seven-stages.md).
 $ shutdowncheck run --url http://localhost:8080/api/orders -- ./bin/my-server --port 8080
 ```
 
-ShutdownCheck spawns the process, waits for readiness, calibrates load so that requests are *guaranteed* to be in flight when the signal lands, terminates it, and reports:
+ShutdownCheck spawns the process, waits for readiness, calibrates load toward the requested concurrency, verifies that requests were actually in flight when the signal landed, terminates it, and reports. If it cannot prove the in-flight sample, the result is `INCONCLUSIVE`, never a pass:
 
 ```
 VERDICT: FAIL      score 34/100 (F)      consistent across 3/3 trials
@@ -66,7 +66,8 @@ $ shutdowncheck explain SC006
 
 A run can be recorded and re-judged later without repeating it, which is useful
 when deciding whether behaviour that is fine standalone would survive behind a
-load balancer:
+load balancer. Without an override, replay restores the original effective
+policy, gates, metadata and multi-trial summary:
 
 ```console
 $ shutdowncheck run ... --format ndjson --output run.ndjson
@@ -121,11 +122,12 @@ install anything that does not match.
 ## In CI
 
 ```yaml
-- uses: shutdowncheck/shutdowncheck@v1
+- uses: shutdowncheck/shutdowncheck@v1.0.0
   with:
+    version: v1.0.0
     url: http://localhost:8080/api/orders
     readiness-url: http://localhost:8080/readyz
-    command: ./bin/my-server --port 8080
+    command: '["./bin/my-server", "--port", "8080"]'
 ```
 
 The step fails when a defect is found, writes the report to the job summary, and
@@ -135,7 +137,7 @@ without gating while you work through what it finds.
 ## Design commitments
 
 - **Never a false PASS.** If the tool cannot prove correct behaviour, it reports `INCONCLUSIVE`. Trust is the only asset a verification tool has.
-- **Black box.** No source access, no library import, no agent, no sidecar. Go, Java, C#, Python and Node services are tested by the identical command, and the [conformance suite](test/conformance) proves it rather than asserting it.
+- **Black box.** No source access, no library import, no agent, no sidecar. The protocol is stack-independent; the current [conformance suite](test/conformance) proves the same defects across Go, Node.js and Python. Java and C# fixtures remain explicit pre-v1.0 follow-up work.
 - **Deterministic and explainable.** Every verdict traces to a named rule over recorded evidence. No heuristics, no ML, no AI.
 - **Single static binary.** No runtime, no daemon, no cluster install, no account.
 - **No telemetry. Ever.**

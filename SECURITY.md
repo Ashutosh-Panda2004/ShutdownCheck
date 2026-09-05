@@ -28,13 +28,13 @@ Guarantees that constrain all of the above:
 | Area | Guarantee |
 |---|---|
 | Command execution | Subprocesses are built as an argv slice and executed directly. No shell is ever invoked and no string interpolation occurs. Externally-supplied identifiers are validated against a strict allowlist before reaching argv. |
-| Signal targets | Refuses to signal PID <= 1, and refuses shutdowncheck's own PID or process group, unless explicitly overridden. `SIGKILL` only ever reaches a target the tool positively identified. |
+| Signal targets | Refuses invalid PIDs and shutdowncheck's own process unconditionally. PID 1 requires the explicit `--allow-unsafe-pid` opt-in because it is init on a host but can be the service inside a container. `SIGKILL` only ever reaches a target the tool positively identified. |
 | Process cleanup | Spawned process groups are terminated on every exit path, including panic and interruption of the tool itself. |
 | TLS | Certificate verification is on by default. `--insecure` is explicit, prints a warning, and is recorded in the report. |
 | Egress | Traffic goes only to the configured target. There are no update checks, no analytics, and **no telemetry of any kind**. |
-| Secrets | `Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie`, `X-Api-Key` and configured secret patterns are redacted in all reports, logs and NDJSON. Request bodies are never echoed into reports — only a length and a hash. |
-| Report files | Written with `0600` permissions, since they may contain internal hostnames and URLs. |
-| Resource limits | Per-request records, captured target logs, response body reads and open sockets are all bounded, so a long run cannot exhaust host memory or file descriptors. |
+| Secrets | Sensitive headers, secret-looking URL query values, command-line arguments and captured log fields are redacted in reports and NDJSON. Request headers and bodies are not recorded at all. |
+| Report files | Written atomically with `0600` permissions on POSIX systems, since they may contain internal hostnames and URLs. Windows inherits the destination directory's ACL because it has no POSIX mode bits. |
+| Resource limits | Request and auxiliary evidence, captured target logs, config/evidence/request/response bodies, rates, durations, trials, report width, Docker output and open sockets are bounded. If verdict-bearing evidence is omitted, the result is `INCONCLUSIVE`, never `PASS`. |
 
 If you find a way to break any of these guarantees, that is a vulnerability — please report it.
 
@@ -48,4 +48,5 @@ If you find a way to break any of these guarantees, that is a vulnerability — 
 
 - Findings that require an attacker to already control the machine running ShutdownCheck.
 - The fact that the tool terminates the process you explicitly told it to terminate.
-- Denial of service caused by pointing the tool at a target with a deliberately extreme `--rps`.
+- Load intentionally imposed on the selected target within the documented rate
+	and concurrency limits.
