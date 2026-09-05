@@ -54,12 +54,23 @@ func (p Palette) wrap(code, s string) string {
 	return code + s + ansiReset
 }
 
-func (p Palette) Bold(s string) string   { return p.wrap(ansiBold, s) }
-func (p Palette) Dim(s string) string    { return p.wrap(ansiDim, s) }
-func (p Palette) Red(s string) string    { return p.wrap(ansiRed, s) }
-func (p Palette) Green(s string) string  { return p.wrap(ansiGreen, s) }
+// Bold renders s with bold terminal styling when enabled.
+func (p Palette) Bold(s string) string { return p.wrap(ansiBold, s) }
+
+// Dim renders s with dim terminal styling when enabled.
+func (p Palette) Dim(s string) string { return p.wrap(ansiDim, s) }
+
+// Red renders s with red terminal styling when enabled.
+func (p Palette) Red(s string) string { return p.wrap(ansiRed, s) }
+
+// Green renders s with green terminal styling when enabled.
+func (p Palette) Green(s string) string { return p.wrap(ansiGreen, s) }
+
+// Yellow renders s with yellow terminal styling when enabled.
 func (p Palette) Yellow(s string) string { return p.wrap(ansiYellow, s) }
-func (p Palette) Cyan(s string) string   { return p.wrap(ansiCyan, s) }
+
+// Cyan renders s with cyan terminal styling when enabled.
+func (p Palette) Cyan(s string) string { return p.wrap(ansiCyan, s) }
 
 // isTerminal reports whether w is an interactive terminal.
 //

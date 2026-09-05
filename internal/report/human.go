@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/shutdowncheck/shutdowncheck/internal/analyze"
+	"github.com/shutdowncheck/shutdowncheck/internal/redact"
 	"github.com/shutdowncheck/shutdowncheck/internal/timeline"
 	"github.com/shutdowncheck/shutdowncheck/pkg/schema"
 )
@@ -20,8 +21,12 @@ type Options struct {
 	Quiet      bool
 }
 
-// DefaultWidth is used when no width is supplied and COLUMNS is unset.
-const DefaultWidth = 88
+// Width bounds keep rendering useful without allowing an input flag to drive
+// unbounded row allocations.
+const (
+	DefaultWidth = 88
+	MaxWidth     = 1_000
+)
 
 const labelWidth = 9
 
@@ -31,6 +36,9 @@ func Human(w io.Writer, result analyze.Result, tl timeline.Timeline, opts Option
 	width := opts.Width
 	if width <= 0 {
 		width = DefaultWidth
+	}
+	if width > MaxWidth {
+		width = MaxWidth
 	}
 
 	r := &humanReport{w: w, p: p, width: width, result: result, tl: tl}
@@ -76,7 +84,7 @@ func (r *humanReport) header() {
 
 	meta := []string{"profile=" + rep.Run.Profile}
 	if rep.Target.Label != "" {
-		meta = append(meta, "target="+rep.Target.Label)
+		meta = append(meta, "target="+redact.Text(rep.Target.Label))
 	}
 	if rep.Run.Trials.Total > 1 {
 		meta = append(meta, fmt.Sprintf("trials=%d", rep.Run.Trials.Total))
@@ -90,7 +98,8 @@ func (r *humanReport) header() {
 			rate = "calibrated"
 		}
 		r.line(fmt.Sprintf("  %s %s   %s to %.0f rps (%d in flight at the signal)",
-			rep.Probe.Method, rep.Probe.URL, rate, rep.Load.RPS, rep.Load.ObservedInFlightAtSignal))
+			redact.Text(rep.Probe.Method), redact.Text(rep.Probe.URL), rate,
+			rep.Load.RPS, rep.Load.ObservedInFlightAtSignal))
 	}
 	r.blank()
 }

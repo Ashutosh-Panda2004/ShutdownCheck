@@ -101,7 +101,7 @@ func brokenRun(t *testing.T) (analyze.Result, timeline.Timeline) {
 			URL: "http://localhost:8080/api/orders", Method: "POST",
 			ReadinessURL: "http://localhost:8080/readyz",
 		},
-		Load: analyze.LoadInfo{Calibrated: true, RPS: 340, TargetInFlight: 20},
+		Load: analyze.LoadInfo{Calibrated: true, RPS: 340, TargetInFlight: 20, Achievable: true},
 	})
 	return result, tl
 }
@@ -212,6 +212,35 @@ func TestMarkdownGolden(t *testing.T) {
 	checkGolden(t, "report.golden.md", buf.Bytes())
 }
 
+func TestMarkdownTargetCannotBreakOutOfCodeSpan(t *testing.T) {
+	result, _ := brokenRun(t)
+	result.Report.Target.Label = "api` **injected**"
+
+	var buf bytes.Buffer
+	if err := Markdown(&buf, result); err != nil {
+		t.Fatalf("Markdown: %v", err)
+	}
+	if !strings.Contains(buf.String(), "`` api` **injected** ``") {
+		t.Fatalf("target label was not enclosed in a safe code span:\n%s", buf.String())
+	}
+}
+
+func TestMarkdownPreservesInformationalSeverity(t *testing.T) {
+	result, _ := brokenRun(t)
+	result.Report.Findings = []schema.Finding{{
+		ID: "SC009", Name: "KEEPALIVE_NOT_TERMINATED", Severity: schema.SeverityInfo,
+		Summary: "ignored by policy",
+	}}
+
+	var buf bytes.Buffer
+	if err := Markdown(&buf, result); err != nil {
+		t.Fatalf("Markdown: %v", err)
+	}
+	if !strings.Contains(buf.String(), "| info |") || strings.Contains(buf.String(), "| warn |") {
+		t.Fatalf("Markdown changed informational severity:\n%s", buf.String())
+	}
+}
+
 func TestBadgeGolden(t *testing.T) {
 	result, _ := brokenRun(t)
 
@@ -289,6 +318,23 @@ func TestInconclusiveIsNeverPresentedAsSuccess(t *testing.T) {
 	}
 	if !strings.Contains(md.String(), "not** a pass") {
 		t.Error("the markdown summary must spell out that this is not a pass")
+	}
+
+	var junit bytes.Buffer
+	if err := JUnit(&junit, result); err != nil {
+		t.Fatalf("JUnit: %v", err)
+	}
+	if strings.Contains(junit.String(), `failures="0"`) ||
+		!strings.Contains(junit.String(), `<failure message="Only 1 request(s) were in flight`) {
+		t.Errorf("JUnit presented an inconclusive run as passing:\n%s", junit.String())
+	}
+
+	var badge bytes.Buffer
+	if err := Badge(&badge, result.Report); err != nil {
+		t.Fatalf("Badge: %v", err)
+	}
+	if !strings.Contains(badge.String(), "inconclusive") || strings.Contains(badge.String(), "#4c1") {
+		t.Errorf("badge presented an inconclusive run as green:\n%s", badge.String())
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/shutdowncheck/shutdowncheck/internal/analyze"
+	"github.com/shutdowncheck/shutdowncheck/internal/redact"
 	"github.com/shutdowncheck/shutdowncheck/internal/timeline"
 	"github.com/shutdowncheck/shutdowncheck/pkg/schema"
 )
@@ -16,6 +17,7 @@ import (
 // Format names the output rendering.
 type Format string
 
+// FormatHuman and the other format constants identify supported renderers.
 const (
 	FormatHuman    Format = "human"
 	FormatJSON     Format = "json"
@@ -97,7 +99,7 @@ func JUnit(w io.Writer, result analyze.Result) error {
 		id := string(info.ID)
 		c := junitCase{Name: id + " " + info.Name, ClassName: "shutdowncheck.signatures"}
 
-		if finding, ok := fired[id]; ok && finding.Severity == schema.SeverityError {
+		if finding, ok := fired[id]; ok && (finding.Severity == schema.SeverityError || finding.ID == string(analyze.SC000)) {
 			c.Failure = &junitFailure{
 				Message: finding.Summary,
 				Type:    info.Name,
@@ -155,7 +157,7 @@ func Markdown(w io.Writer, result analyze.Result) error {
 	fmt.Fprintf(&b, "## ShutdownCheck: %s\n\n", icon)
 	fmt.Fprintf(&b, "**Score %d/100 (%s)** &middot; profile `%s`", rep.Score.Value, rep.Score.Grade, rep.Run.Profile)
 	if rep.Target.Label != "" {
-		fmt.Fprintf(&b, " &middot; target `%s`", rep.Target.Label)
+		fmt.Fprintf(&b, " &middot; target %s", markdownCode(rep.Target.Label))
 	}
 	if rep.Run.Trials.Total > 1 {
 		fmt.Fprintf(&b, " &middot; %d of %d trials failed", rep.Run.Trials.Failed, rep.Run.Trials.Total)
@@ -195,7 +197,7 @@ func Markdown(w io.Writer, result analyze.Result) error {
 
 	b.WriteString("### Findings\n\n| | ID | Finding | Detail |\n|---|---|---|---|\n")
 	for _, finding := range rep.Findings {
-		severity := "warn"
+		severity := string(finding.Severity)
 		if finding.Severity == schema.SeverityError {
 			severity = "**error**"
 		}
@@ -205,6 +207,18 @@ func Markdown(w io.Writer, result analyze.Result) error {
 
 	_, err := io.WriteString(w, b.String())
 	return err
+}
+
+func markdownCode(value string) string {
+	value = redact.Text(value)
+	delimiter := "`"
+	if !strings.Contains(value, delimiter) {
+		return delimiter + value + delimiter
+	}
+	for strings.Contains(value, delimiter) {
+		delimiter += "`"
+	}
+	return delimiter + " " + value + " " + delimiter
 }
 
 // Badge writes an SVG score badge for a README.
@@ -217,6 +231,13 @@ func Badge(w io.Writer, report schema.Report) error {
 	}
 
 	value := fmt.Sprintf("%d/100 (%s)", report.Score.Value, report.Score.Grade)
+	switch report.Verdict {
+	case schema.VerdictFail:
+		colour = "#e05d44"
+	case schema.VerdictInconclusive:
+		colour = "#9f9f9f"
+		value = "inconclusive"
+	}
 	const labelWidth = 96
 	valueWidth := 8*len(value) + 20
 	total := labelWidth + valueWidth
