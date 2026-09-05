@@ -28,3 +28,6 @@ Thumbs.db
 
 # Tooling caches
 .tokenlens/
+
+# Internal planning doc, not part of the public repo
+/DEVELOPMENT-PLAN.md

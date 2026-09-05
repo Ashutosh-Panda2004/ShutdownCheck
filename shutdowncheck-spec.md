@@ -1002,4 +1002,4 @@ Nothing. Every question raised in v0.1 and v0.2 has been decided, and each decis
 
 ---
 
-*End of v0.2. Implementation proceeds against `DEVELOPMENT-PLAN.md`.*
+*End of v0.2.*

@@ -6,7 +6,7 @@
 > use the Docker target: the platform has no `SIGTERM`, and simulating one
 > would produce a verdict about a signal that was never delivered. Kubernetes
 > targeting is still to come, and the install methods below describe a release
-> that has not been tagged yet — see [DEVELOPMENT-PLAN.md](DEVELOPMENT-PLAN.md).
+> that has not been tagged yet.
 > Not yet recommended as a merge gate you depend on.
 
 **ShutdownCheck terminates your service the way your orchestrator will — under real load — and tells you exactly which stage of shutdown you got wrong, and how to fix it in your framework.**
@@ -158,7 +158,6 @@ make ci             # lint, test, race, coverage
 | Document | Purpose |
 |---|---|
 | [shutdowncheck-spec.md](shutdowncheck-spec.md) | Full technical specification and locked design decisions |
-| [DEVELOPMENT-PLAN.md](DEVELOPMENT-PLAN.md) | Phase-by-phase build plan with exit criteria |
 | [docs/adr/](docs/adr/) | Architecture decision records |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to build, test and propose changes |
 | [SECURITY.md](SECURITY.md) | Vulnerability reporting and the tool's security posture |

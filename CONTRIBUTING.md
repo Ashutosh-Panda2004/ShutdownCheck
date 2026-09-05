@@ -9,7 +9,6 @@ Thanks for considering it. This project has an unusual constraint that shapes al
 ## Before you start
 
 - Read the **Non-Goals** section of [shutdowncheck-spec.md](shutdowncheck-spec.md). The scope is deliberately narrow, and proposals outside it get closed regardless of quality.
-- Check [DEVELOPMENT-PLAN.md](DEVELOPMENT-PLAN.md) for which phase owns the area you want to work on.
 - For anything non-trivial, open an issue first. It is much cheaper to disagree about an approach in an issue than in a large pull request.
 
 ## Development setup
