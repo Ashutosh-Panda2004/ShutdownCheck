@@ -22,6 +22,10 @@ type fakeTarget struct {
 
 	startErr   error
 	signalErr  error
+	killErr    error
+	aliveErr   error
+	waitErr    error
+	closeErr   error
 	ignoreTerm bool
 	drainFor   time.Duration
 
@@ -45,6 +49,9 @@ func (f *fakeTarget) Signal(sig target.Signal) error {
 	if f.signalErr != nil {
 		return f.signalErr
 	}
+	if sig == target.SIGKILL && f.killErr != nil {
+		return f.killErr
+	}
 
 	switch {
 	case sig == target.SIGKILL:
@@ -62,6 +69,9 @@ func (f *fakeTarget) Signal(sig target.Signal) error {
 func (f *fakeTarget) Alive() (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.aliveErr != nil {
+		return false, f.aliveErr
+	}
 
 	if f.deadline == nil {
 		return true, nil
@@ -70,6 +80,9 @@ func (f *fakeTarget) Alive() (bool, error) {
 }
 
 func (f *fakeTarget) Wait(ctx context.Context) (target.ExitStatus, error) {
+	if f.waitErr != nil {
+		return target.ExitStatus{}, f.waitErr
+	}
 	for {
 		alive, _ := f.Alive()
 		if !alive {
@@ -91,7 +104,7 @@ func (f *fakeTarget) Close() error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.closes++
-	return nil
+	return f.closeErr
 }
 
 func (f *fakeTarget) sentSignals() []target.Signal {
@@ -108,9 +121,10 @@ func (f *fakeTarget) closeCount() int {
 
 // fakeGenerator records the phases it was asked to run.
 type fakeGenerator struct {
-	mu      sync.Mutex
-	phases  []load.Phase
-	latency time.Duration
+	mu          sync.Mutex
+	phases      []load.Phase
+	latency     time.Duration
+	pinnedDelay time.Duration
 }
 
 func (g *fakeGenerator) Run(ctx context.Context, _ time.Time, phase load.Phase) load.Result {
@@ -121,6 +135,12 @@ func (g *fakeGenerator) Run(ctx context.Context, _ time.Time, phase load.Phase) 
 	latency := g.latency
 	if latency == 0 {
 		latency = 20 * time.Millisecond
+	}
+	if phase.PinnedReady != nil {
+		if g.pinnedDelay > 0 {
+			time.Sleep(g.pinnedDelay)
+		}
+		phase.PinnedReady <- phase.PinnedCount
 	}
 
 	samples := make([]time.Duration, 30)
@@ -146,6 +166,17 @@ type fakePoller struct {
 	build func() timeline.Event
 	mu    sync.Mutex
 	calls int
+}
+
+type canceledPoller struct {
+	started chan struct{}
+	event   timeline.Event
+}
+
+func (p *canceledPoller) Poll(ctx context.Context) timeline.Event {
+	close(p.started)
+	<-ctx.Done()
+	return p.event
 }
 
 func (p *fakePoller) Poll(context.Context) timeline.Event {
@@ -252,6 +283,59 @@ func TestRunHappyPath(t *testing.T) {
 	}
 	if tgt.closeCount() == 0 {
 		t.Error("the target was never closed")
+	}
+}
+
+func TestSlowURLIsPinnedAcrossTheSignalPhase(t *testing.T) {
+	tgt := &fakeTarget{drainFor: 10 * time.Millisecond}
+	gen := &fakeGenerator{}
+	opts := baseOptions(t, tgt, gen, 200*time.Millisecond)
+	opts.TargetInFlight = 2
+	opts.SlowURL = "http://localhost:8080/slow"
+
+	runner, err := New(opts)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, err := runner.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	phases := gen.recorded()
+	if len(phases) != 2 {
+		t.Fatalf("generator ran %d phases, want warmup and termination phases", len(phases))
+	}
+	phase := phases[1]
+	if phase.PinnedRequest == nil || phase.PinnedRequest.URL != opts.SlowURL {
+		t.Fatalf("pinned request = %+v", phase.PinnedRequest)
+	}
+	if phase.PinnedCount != opts.Policy.MinInFlightSample {
+		t.Errorf("PinnedCount = %d, want minimum sample %d", phase.PinnedCount, opts.Policy.MinInFlightSample)
+	}
+	if phase.PinnedAt != opts.Steady+opts.PreStopSleep {
+		t.Errorf("PinnedAt = %s, want the signal boundary %s", phase.PinnedAt, opts.Steady+opts.PreStopSleep)
+	}
+}
+
+func TestPinnedDispatchDelayIsRecordedAsSignalSkew(t *testing.T) {
+	testutil.NoLeaks(t)
+
+	gen := &fakeGenerator{pinnedDelay: 120 * time.Millisecond}
+	opts := baseOptions(t, &fakeTarget{drainFor: 10 * time.Millisecond}, gen, 150*time.Millisecond)
+	opts.TargetInFlight = 5
+	opts.SlowURL = "http://localhost:8080/slow"
+
+	runner, err := New(opts)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	result, err := runner.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	signal, _, ok := result.Timeline.TerminationSignal()
+	if !ok || signal.Skew <= analyze.MaxSignalSkew {
+		t.Fatalf("signal skew = %s, want above %s", signal.Skew, analyze.MaxSignalSkew)
 	}
 }
 
@@ -401,6 +485,83 @@ func TestRunRecordsObserverSamples(t *testing.T) {
 	}
 }
 
+func TestRunPrimesObserversBeforeTraffic(t *testing.T) {
+	testutil.NoLeaks(t)
+
+	readiness := &fakePoller{build: func() timeline.Event {
+		return timeline.ReadinessAt(0, timeline.ReadinessEvent{Status: 200, Healthy: true, Outcome: timeline.OutcomeOK})
+	}}
+	listener := &fakePoller{build: func() timeline.Event {
+		return timeline.ListenerAt(0, timeline.ListenerEvent{Accepting: true, Outcome: timeline.OutcomeOK})
+	}}
+	opts := baseOptions(t, &fakeTarget{drainFor: time.Millisecond}, &fakeGenerator{}, 2*time.Millisecond)
+	opts.Readiness = readiness
+	opts.Listener = listener
+	opts.Warmup = time.Nanosecond
+	opts.Steady = time.Nanosecond
+	opts.ObserveInterval = time.Hour
+
+	runner, err := New(opts)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	result, err := runner.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(result.Timeline.EventsOfKind(timeline.KindReadiness)) == 0 ||
+		len(result.Timeline.EventsOfKind(timeline.KindListener)) == 0 {
+		t.Fatal("observers were not sampled before the short run completed")
+	}
+}
+
+func TestStoppingObserversDoesNotRecordCanceledPolls(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		kind  timeline.Kind
+		event timeline.Event
+	}{
+		{
+			name: "readiness", kind: timeline.KindReadiness,
+			event: timeline.ReadinessAt(0, timeline.ReadinessEvent{
+				Healthy: false, Outcome: timeline.OutcomeAbandoned,
+			}),
+		},
+		{
+			name: "listener", kind: timeline.KindListener,
+			event: timeline.ListenerAt(0, timeline.ListenerEvent{
+				Accepting: false, Outcome: timeline.OutcomeAbandoned,
+			}),
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			testutil.NoLeaks(t)
+			recorder := timeline.NewRecorder(timeline.Meta{}, 100)
+			poller := &canceledPoller{started: make(chan struct{}), event: test.event}
+			runner := &Runner{
+				opts: Options{Recorder: recorder, Readiness: poller, ObserveInterval: time.Millisecond},
+				clk:  clock.System(),
+			}
+			if test.kind == timeline.KindListener {
+				runner.opts.Readiness = nil
+				runner.opts.Listener = poller
+			}
+
+			stop := runner.startObservers(context.Background())
+			select {
+			case <-poller.started:
+			case <-time.After(time.Second):
+				t.Fatal("observer poll did not start")
+			}
+			stop()
+
+			if got := len(recorder.Snapshot().EventsOfKind(test.kind)); got != 0 {
+				t.Fatalf("recorded %d canceled %s poll(s), want 0", got, test.name)
+			}
+		})
+	}
+}
+
 // A port still accepting after the process has gone means an orphaned child
 // kept the listener, which is what SC012 reports.
 func TestRunRecordsPortReleaseAfterExit(t *testing.T) {
@@ -480,12 +641,80 @@ func TestRunStopsOnContextCancellation(t *testing.T) {
 	}()
 
 	start := time.Now()
-	if _, err := runner.Run(ctx); err == nil {
-		t.Log("run returned without error after cancellation, which is acceptable")
+	if _, err := runner.Run(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run error = %v, want context cancellation", err)
 	}
 	if elapsed := time.Since(start); elapsed > 5*time.Second {
 		t.Fatalf("cancellation took %v to take effect", elapsed)
 	}
+}
+
+func TestRunPropagatesLivenessFailure(t *testing.T) {
+	tgt := &fakeTarget{aliveErr: errors.New("cannot observe process")}
+	opts := baseOptions(t, tgt, &fakeGenerator{}, 100*time.Millisecond)
+	opts.FixedRate = 10
+
+	runner, err := New(opts)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, err := runner.Run(context.Background()); err == nil || !strings.Contains(err.Error(), "cannot observe") {
+		t.Fatalf("Run error = %v", err)
+	}
+}
+
+func TestRunPropagatesFailedSigkill(t *testing.T) {
+	tgt := &fakeTarget{ignoreTerm: true, killErr: errors.New("kill denied")}
+	opts := baseOptions(t, tgt, &fakeGenerator{}, 50*time.Millisecond)
+	opts.FixedRate = 10
+
+	runner, err := New(opts)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	result, err := runner.Run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "kill denied") {
+		t.Fatalf("Run error = %v", err)
+	}
+	if result.Killed {
+		t.Error("result says the target was killed even though SIGKILL failed")
+	}
+}
+
+func TestRunPropagatesExitObservationFailure(t *testing.T) {
+	tgt := &fakeTarget{waitErr: errors.New("wait failed")}
+	opts := baseOptions(t, tgt, &fakeGenerator{}, 100*time.Millisecond)
+	opts.FixedRate = 10
+
+	runner, err := New(opts)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, err := runner.Run(context.Background()); err == nil || !strings.Contains(err.Error(), "wait failed") {
+		t.Fatalf("Run error = %v", err)
+	}
+}
+
+func TestRunPropagatesCleanupFailureAndRecordsIt(t *testing.T) {
+	tgt := &fakeTarget{drainFor: 10 * time.Millisecond, closeErr: errors.New("cleanup failed")}
+	opts := baseOptions(t, tgt, &fakeGenerator{}, 100*time.Millisecond)
+	opts.FixedRate = 10
+
+	runner, err := New(opts)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	result, err := runner.Run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "cleanup failed") {
+		t.Fatalf("Run error = %v", err)
+	}
+
+	for _, event := range result.Timeline.EventsOfKind(timeline.KindNotice) {
+		if event.Notice != nil && event.Notice.Code == "cleanup_failed" {
+			return
+		}
+	}
+	t.Fatal("cleanup failure was not retained in the final timeline")
 }
 
 func TestRunUsesFixedRateWhenCalibrationIsDisabled(t *testing.T) {
@@ -509,11 +738,14 @@ func TestRunUsesFixedRateWhenCalibrationIsDisabled(t *testing.T) {
 	}
 
 	phases := gen.recorded()
-	if len(phases) != 1 {
-		t.Fatalf("ran %d phases, want 1 (warmup is skipped without calibration)", len(phases))
+	if len(phases) != 2 {
+		t.Fatalf("ran %d phases, want 2 (warmup then fixed-rate traffic)", len(phases))
 	}
-	if phases[0].Rate != 123 {
-		t.Errorf("rate = %v, want the explicit 123", phases[0].Rate)
+	if !phases[0].Warmup || phases[0].Rate != WarmupRate {
+		t.Errorf("warmup phase = %+v, want %v rps warmup", phases[0], WarmupRate)
+	}
+	if phases[1].Rate != 123 {
+		t.Errorf("main rate = %v, want the explicit 123", phases[1].Rate)
 	}
 }
 

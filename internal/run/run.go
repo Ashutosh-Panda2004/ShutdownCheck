@@ -10,6 +10,7 @@ import (
 	"github.com/shutdowncheck/shutdowncheck/internal/analyze"
 	"github.com/shutdowncheck/shutdowncheck/internal/clock"
 	"github.com/shutdowncheck/shutdowncheck/internal/load"
+	"github.com/shutdowncheck/shutdowncheck/internal/probe"
 	"github.com/shutdowncheck/shutdowncheck/internal/target"
 	"github.com/shutdowncheck/shutdowncheck/internal/timeline"
 )
@@ -26,10 +27,6 @@ const (
 
 	// ExitPollInterval is how often the target is checked for having exited.
 	ExitPollInterval = 10 * time.Millisecond
-
-	// SignalSkewBudget is the delivery lateness above which a run is flagged as
-	// low confidence, because the host was too busy to time the experiment.
-	SignalSkewBudget = 50 * time.Millisecond
 )
 
 // Generator produces traffic. It is an interface so the orchestrator can be
@@ -68,6 +65,7 @@ type Options struct {
 	TargetInFlight int
 	MaxRPS         float64
 	ConcurrencyCap int
+	SlowURL        string
 }
 
 // Result is what a completed run produces.
@@ -119,22 +117,34 @@ func New(opts Options) (*Runner, error) {
 // Cleanup is unconditional: whatever happens, the target is closed and the
 // observers are stopped before returning. A spawned process group that survives
 // a failed run would corrupt every later run on the same machine.
-func (r *Runner) Run(ctx context.Context) (Result, error) {
+func (r *Runner) Run(ctx context.Context) (result Result, runErr error) {
 	r.origin = r.clk.Now()
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	defer func() {
-		if err := r.opts.Target.Close(); err != nil {
-			r.notice("warn", "cleanup_failed", err.Error())
+		if closeErr := r.opts.Target.Close(); closeErr != nil {
+			r.notice("error", "cleanup_failed", closeErr.Error())
+			cleanupErr := fmt.Errorf("cleanup target: %w", closeErr)
+			if runErr == nil {
+				runErr = cleanupErr
+			} else {
+				runErr = errors.Join(runErr, cleanupErr)
+			}
 		}
+		// Cleanup can emit target logs or a failure notice, so this must be the
+		// final snapshot on every return path.
+		result.Timeline = r.opts.Recorder.Snapshot()
 	}()
 
 	r.stage(timeline.StagePreflight)
 
 	if err := r.startTarget(ctx); err != nil {
-		return Result{Timeline: r.opts.Recorder.Snapshot()}, err
+		return result, err
+	}
+	if err := r.primeObservers(ctx); err != nil {
+		return result, err
 	}
 
 	stopObservers := r.startObservers(ctx)
@@ -142,17 +152,30 @@ func (r *Runner) Run(ctx context.Context) (Result, error) {
 
 	calibration, calibrated, err := r.warmupAndCalibrate(ctx)
 	if err != nil {
-		return Result{Timeline: r.opts.Recorder.Snapshot()}, err
+		return result, err
 	}
 
-	result, err := r.terminate(ctx, calibration.RPS)
+	result, runErr = r.terminate(ctx, calibration.RPS)
 	result.Calibration = calibration
 	result.Calibrated = calibrated
 
 	stopObservers()
 	r.stage(timeline.StageComplete)
-	result.Timeline = r.opts.Recorder.Snapshot()
-	return result, err
+	return result, runErr
+}
+
+func (r *Runner) primeObservers(ctx context.Context) error {
+	for _, poller := range []Poller{r.opts.Readiness, r.opts.Listener} {
+		if poller == nil {
+			continue
+		}
+		event := poller.Poll(ctx)
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		r.record(event)
+	}
+	return nil
 }
 
 func (r *Runner) startTarget(ctx context.Context) error {
@@ -171,16 +194,34 @@ func (r *Runner) startTarget(ctx context.Context) error {
 }
 
 func (r *Runner) warmupAndCalibrate(ctx context.Context) (load.Calibration, bool, error) {
-	if r.opts.FixedRate > 0 {
-		return load.Calibration{RPS: r.opts.FixedRate, Achievable: true}, false, nil
-	}
-
 	r.stage(timeline.StageWarmup)
 	warmup := r.opts.Generator.Run(ctx, r.origin, load.Phase{
 		Rate:     WarmupRate,
 		Duration: r.opts.Warmup,
 		Warmup:   true,
 	})
+	if err := ctx.Err(); err != nil {
+		return load.Calibration{}, false, err
+	}
+	if r.opts.FixedRate > 0 {
+		baseline, warnings, err := load.AssessBaseline(
+			warmup.Latencies, warmup.Errors, warmup.Completed)
+		if err != nil {
+			return load.Calibration{}, false, fmt.Errorf("assess baseline: %w", err)
+		}
+		calibration := load.Calibration{
+			RPS: r.opts.FixedRate, BaselineLatency: baseline,
+			ExpectedInFlight: r.opts.FixedRate * baseline.Seconds(),
+			Achievable:       true, Warnings: warnings,
+		}
+		for _, warning := range warnings {
+			r.notice("warn", "baseline", warning)
+		}
+		r.notice("info", "fixed_rate", fmt.Sprintf(
+			"baseline %s, fixed rate %.0f rps, expecting %.1f requests in flight",
+			baseline, r.opts.FixedRate, calibration.ExpectedInFlight))
+		return calibration, false, nil
+	}
 
 	r.stage(timeline.StageCalibrate)
 	calibration, err := load.Calibrate(load.Input{
@@ -219,15 +260,35 @@ func (r *Runner) warmupAndCalibrate(ctx context.Context) (load.Calibration, bool
 func (r *Runner) terminate(ctx context.Context, rate float64) (Result, error) {
 	grace := r.opts.Policy.GracePeriod
 	total := r.opts.Steady + r.opts.PreStopSleep + grace + PostExitTail
+	signalDue := r.now() + r.opts.Steady + r.opts.PreStopSleep
 
 	trafficCtx, stopTraffic := context.WithCancel(ctx)
 	defer stopTraffic()
 
 	var traffic sync.WaitGroup
+	var pinnedReady <-chan int
+	pinnedWanted := 0
 	traffic.Add(1)
+	phase := load.Phase{Rate: rate, Duration: total}
+	if r.opts.SlowURL != "" && r.opts.TargetInFlight > 0 {
+		slow := probe.Request{Name: "slow", Method: "GET", URL: r.opts.SlowURL}
+		ready := make(chan int, 1)
+		phase.PinnedRequest = &slow
+		phase.PinnedCount = r.opts.TargetInFlight
+		if phase.PinnedCount < r.opts.Policy.MinInFlightSample {
+			phase.PinnedCount = r.opts.Policy.MinInFlightSample
+		}
+		if phase.PinnedCount > r.opts.ConcurrencyCap {
+			phase.PinnedCount = r.opts.ConcurrencyCap
+		}
+		phase.PinnedAt = r.opts.Steady + r.opts.PreStopSleep
+		phase.PinnedReady = ready
+		pinnedReady = ready
+		pinnedWanted = phase.PinnedCount
+	}
 	go func() {
 		defer traffic.Done()
-		r.opts.Generator.Run(trafficCtx, r.origin, load.Phase{Rate: rate, Duration: total})
+		r.opts.Generator.Run(trafficCtx, r.origin, phase)
 	}()
 
 	r.stage(timeline.StageSteady)
@@ -246,18 +307,34 @@ func (r *Runner) terminate(ctx context.Context, rate float64) (Result, error) {
 		}
 	}
 
-	intended := r.now()
+	if pinnedReady != nil {
+		select {
+		case started := <-pinnedReady:
+			if started < pinnedWanted {
+				r.notice("warn", string(analyze.SC000), fmt.Sprintf(
+					"only %d of %d slow requests started before the signal", started, pinnedWanted))
+			}
+		case <-ctx.Done():
+			stopTraffic()
+			traffic.Wait()
+			return Result{}, ctx.Err()
+		}
+	}
+
 	r.stage(timeline.StageSignal)
 	signalErr := r.opts.Target.Signal(r.opts.Signal)
 	delivered := r.now()
 
-	skew := delivered - intended
+	skew := delivered - signalDue
+	if skew < 0 {
+		skew = 0
+	}
 	r.record(timeline.SignalAt(delivered, timeline.SignalEvent{
 		Signal: string(r.opts.Signal),
 		Skew:   skew,
 		Error:  errText(signalErr),
 	}))
-	if skew > SignalSkewBudget {
+	if skew > analyze.MaxSignalSkew {
 		r.notice("warn", "signal_skew", fmt.Sprintf(
 			"signal delivery was %s late; the host may be too loaded for this run to be trusted", skew))
 	}
@@ -268,10 +345,19 @@ func (r *Runner) terminate(ctx context.Context, rate float64) (Result, error) {
 	}
 
 	r.stage(timeline.StageObserve)
-	result := r.watchExit(ctx, delivered, grace)
+	result, err := r.watchExit(ctx, delivered, grace)
+	if err != nil {
+		stopTraffic()
+		traffic.Wait()
+		return result, err
+	}
 
 	// Let traffic continue briefly past exit so refused connections are visible.
-	r.wait(ctx, PostExitTail)
+	if !r.wait(ctx, PostExitTail) {
+		stopTraffic()
+		traffic.Wait()
+		return result, ctx.Err()
+	}
 	stopTraffic()
 	traffic.Wait()
 
@@ -280,29 +366,33 @@ func (r *Runner) terminate(ctx context.Context, rate float64) (Result, error) {
 }
 
 // watchExit waits for the process to go, escalating to SIGKILL at grace expiry.
-func (r *Runner) watchExit(ctx context.Context, signalAt, grace time.Duration) Result {
+func (r *Runner) watchExit(ctx context.Context, signalAt, grace time.Duration) (Result, error) {
 	deadline := signalAt + grace
 	var result Result
 
 	for {
 		alive, err := r.opts.Target.Alive()
-		if err == nil && !alive {
-			result.ExitStatus = r.recordExit(ctx)
-			return result
+		if err != nil {
+			return result, fmt.Errorf("observe target liveness: %w", err)
+		}
+		if !alive {
+			status, err := r.recordExit(ctx)
+			result.ExitStatus = status
+			return result, err
 		}
 
 		if r.now() >= deadline {
 			break
 		}
 		if !r.wait(ctx, ExitPollInterval) {
-			return result
+			return result, ctx.Err()
 		}
 	}
 
 	if !r.opts.EnforceSigkill {
 		r.notice("warn", "grace_exceeded",
 			"the target was still running at grace expiry; a real orchestrator would have killed it here")
-		return result
+		return result, nil
 	}
 
 	r.stage(timeline.StageSigkill)
@@ -313,19 +403,24 @@ func (r *Runner) watchExit(ctx context.Context, signalAt, grace time.Duration) R
 		Error:  errText(killErr),
 	}))
 	result.Killed = true
+	if killErr != nil {
+		result.Killed = false
+		return result, fmt.Errorf("deliver %s: %w", target.SIGKILL, killErr)
+	}
 
-	result.ExitStatus = r.recordExit(ctx)
-	return result
+	status, err := r.recordExit(ctx)
+	result.ExitStatus = status
+	return result, err
 }
 
-func (r *Runner) recordExit(ctx context.Context) target.ExitStatus {
+func (r *Runner) recordExit(ctx context.Context) (target.ExitStatus, error) {
 	waitCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
 	status, err := r.opts.Target.Wait(waitCtx)
 	if err != nil {
 		r.notice("warn", "exit_unobserved", err.Error())
-		return status
+		return status, fmt.Errorf("observe target exit: %w", err)
 	}
 
 	event := timeline.ProcessEvent{Phase: timeline.ProcExited, PID: r.opts.Target.Describe().PID}
@@ -338,7 +433,7 @@ func (r *Runner) recordExit(ctx context.Context) target.ExitStatus {
 		}
 	}
 	r.record(timeline.ProcessAt(r.now(), event))
-	return status
+	return status, nil
 }
 
 // postExitCheck looks for a port still bound after the process has gone, which
@@ -398,7 +493,11 @@ func (r *Runner) pollLoop(ctx context.Context, p Poller) {
 			if ctx.Err() != nil {
 				return
 			}
-			r.record(p.Poll(ctx))
+			event := p.Poll(ctx)
+			if ctx.Err() != nil {
+				return
+			}
+			r.record(event)
 		}
 	}
 }
