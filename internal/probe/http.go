@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -18,7 +20,13 @@ import (
 // DefaultMaxBodyBytes caps how much of a response body is read. Bodies are
 // discarded, never retained, but they must be read for a keep-alive connection
 // to become reusable.
-const DefaultMaxBodyBytes = 1 << 20
+const (
+	DefaultTimeout      = 10 * time.Second
+	DefaultMaxBodyBytes = 1 << 20
+)
+
+// ErrResponseBodyTooLarge means the complete response was not observed.
+var ErrResponseBodyTooLarge = errors.New("response body exceeds the configured limit")
 
 // Request is one resolved request definition.
 type Request struct {
@@ -69,6 +77,9 @@ func NewHTTP(opts Options) *HTTP {
 	}
 	if opts.MaxBodyBytes <= 0 {
 		opts.MaxBodyBytes = DefaultMaxBodyBytes
+	}
+	if opts.Timeout <= 0 {
+		opts.Timeout = DefaultTimeout
 	}
 	if opts.MaxConns <= 0 {
 		opts.MaxConns = 512
@@ -153,7 +164,10 @@ func (h *HTTP) Do(ctx context.Context, req Request) Attempt {
 	// A body that fails partway through is a dropped request even though the
 	// status line already arrived; this is exactly how a mid-response reset
 	// during shutdown presents itself.
-	_, readErr := io.Copy(io.Discard, io.LimitReader(resp.Body, h.maxBody))
+	read, readErr := io.Copy(io.Discard, io.LimitReader(resp.Body, h.maxBody+1))
+	if readErr == nil && read > h.maxBody {
+		readErr = fmt.Errorf("%w of %d bytes", ErrResponseBodyTooLarge, h.maxBody)
+	}
 	closeErr := resp.Body.Close()
 	if readErr == nil {
 		readErr = closeErr
@@ -173,6 +187,9 @@ func (h *HTTP) build(ctx context.Context, req Request, state *connState) (*http.
 	if method == "" {
 		method = http.MethodGet
 	}
+	if !ValidMethod(method) {
+		return nil, fmt.Errorf("invalid HTTP method")
+	}
 
 	var body io.Reader
 	if len(req.Body) > 0 {
@@ -184,6 +201,9 @@ func (h *HTTP) build(ctx context.Context, req Request, state *connState) (*http.
 		return nil, err
 	}
 	for name, value := range req.Headers {
+		if !ValidHeaderName(name) || !ValidHeaderValue(value) {
+			return nil, fmt.Errorf("invalid HTTP header")
+		}
 		httpReq.Header.Set(name, value)
 	}
 	if len(req.Body) > 0 {

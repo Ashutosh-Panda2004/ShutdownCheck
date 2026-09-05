@@ -92,6 +92,14 @@ func TestDoSuccess(t *testing.T) {
 	}
 }
 
+func TestNewHTTPUsesBoundedDefaultTimeout(t *testing.T) {
+	prober := NewHTTP(Options{})
+	defer prober.Close()
+	if prober.client.Timeout != DefaultTimeout {
+		t.Errorf("client timeout = %s, want %s", prober.client.Timeout, DefaultTimeout)
+	}
+}
+
 func TestDoNonSuccessStatusIsAFailure(t *testing.T) {
 	testutil.NoLeaks(t)
 
@@ -306,12 +314,56 @@ func TestDoDoesNotFollowRedirects(t *testing.T) {
 	}
 }
 
+func TestHTTPResponseBodyLimit(t *testing.T) {
+	for name, tc := range map[string]struct {
+		body        string
+		wantOutcome timeline.Outcome
+		wantError   bool
+	}{
+		"exact limit succeeds": {body: "1234", wantOutcome: timeline.OutcomeOK},
+		"one byte over fails":  {body: "12345", wantOutcome: timeline.OutcomeOther, wantError: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = io.WriteString(w, tc.body)
+			}))
+			defer srv.Close()
+
+			p := newTestProber(t, &collector{}, Options{KeepAlive: true, MaxBodyBytes: 4})
+			got := p.Do(context.Background(), Request{Method: http.MethodGet, URL: srv.URL})
+			if got.Outcome != tc.wantOutcome {
+				t.Errorf("outcome = %q, want %q (error %q)", got.Outcome, tc.wantOutcome, got.Error)
+			}
+			if tc.wantError != (got.Error != "") {
+				t.Errorf("error = %q, wantError %v", got.Error, tc.wantError)
+			}
+		})
+	}
+}
+
 func TestDoInvalidURL(t *testing.T) {
 	p := newTestProber(t, &collector{}, Options{KeepAlive: true})
 
 	got := p.Do(context.Background(), Request{Method: "GET", URL: "://nonsense"})
 	if got.Outcome == timeline.OutcomeOK {
 		t.Fatal("an unparseable URL must not produce a success")
+	}
+}
+
+func TestDoRejectsInvalidHTTPMetadata(t *testing.T) {
+	p := newTestProber(t, &collector{}, Options{KeepAlive: true})
+
+	for name, request := range map[string]Request{
+		"method":       {Method: "BAD METHOD", URL: "http://example.test/"},
+		"header name":  {Method: "GET", URL: "http://example.test/", Headers: map[string]string{"Bad Header": "value"}},
+		"header value": {Method: "GET", URL: "http://example.test/", Headers: map[string]string{"X-Test": "value\r\ninjected"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := p.Do(context.Background(), request)
+			if got.Outcome == timeline.OutcomeOK || got.Error == "" {
+				t.Fatalf("invalid HTTP metadata produced %+v", got)
+			}
+		})
 	}
 }
 
