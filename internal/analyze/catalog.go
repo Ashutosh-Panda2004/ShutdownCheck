@@ -11,6 +11,8 @@ import (
 // something a developer can act on.
 type Stage string
 
+// StageSignalReceived and the other stage constants identify the shutdown
+// stage associated with a signature.
 const (
 	StageSignalReceived Stage = "S1" // handle SIGTERM at all
 	StageReadinessFlip  Stage = "S2" // start failing readiness immediately
@@ -63,8 +65,8 @@ type SignatureInfo struct {
 
 var catalog = map[SignatureID]SignatureInfo{
 	SC000: {SC000, "INSUFFICIENT_INFLIGHT", StageNone,
-		"Too few requests were in flight when the signal landed.",
-		"Nothing, but the test proved nothing either. Never reported as a pass."},
+		"The run did not retain enough trustworthy baseline and in-flight evidence.",
+		"No shutdown conclusion is safe from incomplete or already-unhealthy evidence. Never reported as a pass."},
 	SC001: {SC001, "SIGTERM_IGNORED", StageSignalReceived,
 		"The process showed no reaction to the signal at all.",
 		"Every deploy hard-kills the process and destroys all in-flight work."},

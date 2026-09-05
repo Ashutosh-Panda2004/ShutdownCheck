@@ -252,7 +252,7 @@ var signatureCases = map[SignatureID]signatureCase{
 		negative: healthyRun,
 	},
 	SC010: {
-		positive: func() *fixture { return healthyRun() }, // drains in 7s
+		positive: healthyRun, // drains in 7s
 		negative: func() *fixture {
 			f := newFixture()
 			f.requests(10, 4900*time.Millisecond, 5100*time.Millisecond, timeline.OutcomeOK)

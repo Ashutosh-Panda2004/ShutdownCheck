@@ -1,6 +1,7 @@
 package analyze
 
 import (
+	"math"
 	"testing"
 	"time"
 
@@ -252,12 +253,17 @@ func TestPolicyValidate(t *testing.T) {
 
 	t.Run("rejects bad numbers", func(t *testing.T) {
 		cases := map[string]func(*Policy){
-			"zero grace":       func(p *Policy) { p.GracePeriod = 0 },
-			"negative window":  func(p *Policy) { p.AcceptWindow = -time.Second },
-			"zero sample":      func(p *Policy) { p.MinInFlightSample = 0 },
-			"drop pct over100": func(p *Policy) { p.MaxInFlightDropPct = 101 },
-			"negative budget":  func(p *Policy) { d := -time.Second; p.MaxShutdownTime = &d },
-			"score over 100":   func(p *Policy) { s := 101; p.MinScore = &s },
+			"zero grace":                func(p *Policy) { p.GracePeriod = 0 },
+			"negative window":           func(p *Policy) { p.AcceptWindow = -time.Second },
+			"negative dereg min":        func(p *Policy) { p.DeregMin = -time.Second },
+			"negative readiness budget": func(p *Policy) { p.ReadinessFlipBudget = -time.Second },
+			"excessive grace":           func(p *Policy) { p.GracePeriod = MaxPolicyDuration + time.Second },
+			"zero sample":               func(p *Policy) { p.MinInFlightSample = 0 },
+			"drop pct over100":          func(p *Policy) { p.MaxInFlightDropPct = 101 },
+			"drop pct NaN":              func(p *Policy) { p.MaxInFlightDropPct = math.NaN() },
+			"latency factor Inf":        func(p *Policy) { p.LatencySpikeFactor = math.Inf(1) },
+			"negative budget":           func(p *Policy) { d := -time.Second; p.MaxShutdownTime = &d },
+			"score over 100":            func(p *Policy) { s := 101; p.MinScore = &s },
 		}
 		for name, mutate := range cases {
 			t.Run(name, func(t *testing.T) {

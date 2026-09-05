@@ -31,6 +31,7 @@ type LoadInfo struct {
 	RPS             float64
 	TargetInFlight  int
 	BaselineLatency time.Duration
+	GoalEvaluated   bool
 	Achievable      bool
 	Warnings        []string
 }
@@ -64,7 +65,22 @@ func Analyze(in Input) Result {
 	facts := BuildFacts(in.Timeline, in.Policy)
 
 	var findings []Finding
+	unachievable := in.Load.GoalEvaluated && !in.Load.Achievable
+	if unachievable {
+		expected := in.Load.RPS * in.Load.BaselineLatency.Seconds()
+		findings = append(findings, Finding{
+			ID: SC000, Severity: in.Policy.SeverityOf(SC000),
+			Summary: "The configured in-flight goal was not achievable within the request-rate or concurrency limits.",
+			Evidence: map[string]any{
+				"target_in_flight":   in.Load.TargetInFlight,
+				"expected_in_flight": round2(expected),
+			},
+		})
+	}
 	for _, signature := range Signatures() {
+		if unachievable && signature.ID() == SC000 {
+			continue
+		}
 		if finding, fired := signature.Evaluate(facts, in.Policy); fired {
 			findings = append(findings, finding)
 		}
@@ -241,7 +257,7 @@ func buildRequests(f Facts) schema.Requests {
 			AtSigkill:  schema.PhaseStats{Count: f.AtSigkill},
 		},
 		DrainLatencyMS: toLatency(f.DrainLatency),
-		Dropped:        f.DroppedRecords,
+		Dropped:        f.DroppedRequestRecords,
 	}
 }
 

@@ -120,6 +120,110 @@ func TestInsufficientInFlightForcesInconclusive(t *testing.T) {
 	}
 }
 
+func TestExcessiveSignalSkewForcesInconclusive(t *testing.T) {
+	f := healthyRun()
+	for i := range f.events {
+		if f.events[i].Kind == timeline.KindSignal && f.events[i].Signal.Signal == "TERM" {
+			f.events[i].Signal.Skew = MaxSignalSkew + time.Millisecond
+		}
+	}
+	result := Analyze(Input{Timeline: f.build(), Policy: lameDuckPolicy(t)})
+	if result.Report.Verdict != schema.VerdictInconclusive {
+		t.Fatalf("verdict = %q, want inconclusive for excessive signal skew", result.Report.Verdict)
+	}
+}
+
+func TestUnachievableCalibrationGoalForcesInconclusive(t *testing.T) {
+	f := healthyRun()
+	result := Analyze(Input{
+		Timeline: f.build(), Policy: lameDuckPolicy(t),
+		Load: LoadInfo{
+			Calibrated: true, GoalEvaluated: true, Achievable: false, TargetInFlight: 20,
+			RPS: 100, BaselineLatency: 10 * time.Millisecond,
+		},
+	})
+
+	if result.Report.Verdict != schema.VerdictInconclusive {
+		t.Fatalf("verdict = %q, want inconclusive for an unachievable calibration goal", result.Report.Verdict)
+	}
+	if len(result.Findings) == 0 || result.Findings[0].ID != SC000 {
+		t.Fatalf("findings = %+v, want SC000", result.Findings)
+	}
+}
+
+func TestDroppedRequestEvidenceForcesInconclusive(t *testing.T) {
+	f := newFixture().
+		requests(10, 4900*time.Millisecond, 5100*time.Millisecond, timeline.OutcomeOK).
+		signal(fxSignal).
+		exit(fxExit, 0)
+	tl := f.build()
+	tl.Dropped = 1
+
+	result := Analyze(Input{Timeline: tl, Policy: lameDuckPolicy(t)})
+
+	if result.Report.Verdict != schema.VerdictInconclusive {
+		t.Fatalf("verdict = %q, want inconclusive when request evidence was omitted", result.Report.Verdict)
+	}
+	if got := result.Report.Requests.Dropped; got != 1 {
+		t.Errorf("dropped records = %d, want 1", got)
+	}
+}
+
+func TestDroppedAuxiliaryEvidenceForcesInconclusiveWithoutInflatingRequestDrops(t *testing.T) {
+	tl := healthyRun().build()
+	tl.DroppedAuxiliary = 1
+
+	result := Analyze(Input{Timeline: tl, Policy: lameDuckPolicy(t)})
+	if result.Report.Verdict != schema.VerdictInconclusive {
+		t.Fatalf("verdict = %q, want inconclusive", result.Report.Verdict)
+	}
+	if result.Report.Requests.Dropped != 0 {
+		t.Errorf("request drops = %d, want 0 for auxiliary truncation", result.Report.Requests.Dropped)
+	}
+}
+
+func TestUnhealthyReadinessAtSignalForcesInconclusive(t *testing.T) {
+	f := newFixture().
+		requests(10, 4900*time.Millisecond, 5100*time.Millisecond, timeline.OutcomeOK).
+		readiness(time.Second, true).
+		readiness(4900*time.Millisecond, false).
+		signal(fxSignal).
+		exit(fxExit, 0)
+
+	result := Analyze(Input{Timeline: f.build(), Policy: lameDuckPolicy(t)})
+	if result.Report.Verdict != schema.VerdictInconclusive {
+		t.Fatalf("verdict = %q, want inconclusive for unhealthy pre-signal readiness", result.Report.Verdict)
+	}
+}
+
+func TestUnhealthySteadyStateForcesInconclusive(t *testing.T) {
+	f := newFixture().
+		requests(9, time.Second, 1100*time.Millisecond, timeline.OutcomeOK).
+		requests(1, 2*time.Second, 2100*time.Millisecond, timeline.OutcomeHTTPError).
+		requests(10, 4900*time.Millisecond, 5100*time.Millisecond, timeline.OutcomeOK).
+		signal(fxSignal).
+		exit(fxExit, 0)
+
+	result := Analyze(Input{Timeline: f.build(), Policy: lameDuckPolicy(t)})
+	if result.Report.Verdict != schema.VerdictInconclusive {
+		t.Fatalf("verdict = %q, want inconclusive for unhealthy steady state", result.Report.Verdict)
+	}
+}
+
+func TestClosedListenerAtSignalForcesInconclusive(t *testing.T) {
+	f := newFixture().
+		requests(10, 4900*time.Millisecond, 5100*time.Millisecond, timeline.OutcomeOK).
+		listener(time.Second, true).
+		listener(4900*time.Millisecond, false).
+		signal(fxSignal).
+		exit(fxExit, 0)
+
+	result := Analyze(Input{Timeline: f.build(), Policy: lameDuckPolicy(t)})
+	if result.Report.Verdict != schema.VerdictInconclusive {
+		t.Fatalf("verdict = %q, want inconclusive for closed pre-signal listener", result.Report.Verdict)
+	}
+}
+
 func TestInconclusiveWinsOverFailingSignatures(t *testing.T) {
 	// A dropped in-flight request, but far too few to conclude from.
 	f := newFixture().
@@ -349,7 +453,7 @@ func TestReportShapeMatchesTheEvidence(t *testing.T) {
 		ToolVersion: "1.2.3",
 		Target:      TargetInfo{Kind: TargetCommand, Label: "./api", PID: 42, DetectedStack: "go-net-http"},
 		Probe:       ProbeInfo{URL: "http://localhost:8080/x", Method: "POST", ReadinessURL: "http://localhost:8080/readyz"},
-		Load:        LoadInfo{Calibrated: true, RPS: 340, TargetInFlight: 20},
+		Load:        LoadInfo{Calibrated: true, RPS: 340, TargetInFlight: 20, Achievable: true},
 	})
 	report := result.Report
 
@@ -421,6 +525,25 @@ func TestAggregateReportsWorstVerdict(t *testing.T) {
 	}
 	if got.Report.Run.Trials.Consistent {
 		t.Error("a 1-in-3 failure is inconsistent and must be reported as such")
+	}
+}
+
+func TestAggregateReportsTheTrialThatSuppliedItsEvidence(t *testing.T) {
+	pass := Analyze(Input{Timeline: healthyRun().build(), Policy: lameDuckPolicy(t)})
+	fail := Analyze(Input{Timeline: brokenRun().build(), Policy: lameDuckPolicy(t)})
+
+	got, source, err := AggregateWithSource([]Result{pass, fail, pass})
+	if err != nil {
+		t.Fatalf("AggregateWithSource: %v", err)
+	}
+	if source != 1 {
+		t.Errorf("source = %d, want failing trial at index 1", source)
+	}
+	if got.Report.Verdict != schema.VerdictFail {
+		t.Errorf("verdict = %q, want fail", got.Report.Verdict)
+	}
+	if got.Facts.SignalAt != fail.Facts.SignalAt {
+		t.Error("aggregated facts did not come from the failing trial")
 	}
 }
 

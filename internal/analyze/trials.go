@@ -15,8 +15,16 @@ var ErrNoTrials = errors.New("no trial results to aggregate")
 // inconsistent result is reported rather than averaged away: the run that found
 // a defect is the one that carries information.
 func Aggregate(results []Result) (Result, error) {
+	aggregated, _, err := AggregateWithSource(results)
+	return aggregated, err
+}
+
+// AggregateWithSource also reports which trial supplied the verdict and
+// evidence. Callers that retain per-trial timelines must use the same source,
+// or a failing report can be paired with a passing trial's observations.
+func AggregateWithSource(results []Result) (Result, int, error) {
 	if len(results) == 0 {
-		return Result{}, ErrNoTrials
+		return Result{}, 0, ErrNoTrials
 	}
 
 	worst := 0
@@ -49,7 +57,7 @@ func Aggregate(results []Result) (Result, error) {
 		Failed:     failed,
 		Consistent: consistent,
 	}
-	return aggregated, nil
+	return aggregated, worst, nil
 }
 
 // verdictRank orders verdicts by how much they should dominate an aggregate.

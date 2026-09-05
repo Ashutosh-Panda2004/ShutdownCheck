@@ -38,6 +38,33 @@ var ruleInsufficientInFlight = rule{
 			return "No termination signal was recorded, so nothing about shutdown could be measured.",
 				map[string]any{"signal_recorded": false}, true
 		}
+		if f.DroppedRecords > 0 {
+			return fmt.Sprintf(
+					"%d evidence record(s) were omitted after the recording limit was reached, so shutdown cannot be judged from incomplete evidence.",
+					f.DroppedRecords),
+				map[string]any{"dropped_records": f.DroppedRecords}, true
+		}
+		if f.SignalSkew > MaxSignalSkew {
+			return fmt.Sprintf(
+					"The termination signal landed %s late, beyond the %s timing budget, so request phases cannot be trusted.",
+					f.SignalSkew, MaxSignalSkew),
+				map[string]any{"signal_skew_ms": f.SignalSkew.Milliseconds(), "budget_ms": MaxSignalSkew.Milliseconds()}, true
+		}
+		if f.HadReadinessProbe && !f.ReadinessHealthyAtSignal {
+			return "The configured readiness endpoint was not healthy when the signal landed, so shutdown cannot be separated from a pre-existing health failure.",
+				map[string]any{"readiness_healthy_at_signal": false}, true
+		}
+		if f.HadListenerProbe && !f.ListenerAcceptingAtSignal {
+			return "The target listener was not accepting connections when the signal landed, so shutdown cannot be separated from a pre-existing availability failure.",
+				map[string]any{"listener_accepting_at_signal": false}, true
+		}
+		steady := f.Stat(PhaseSteady)
+		if steady.Count > 0 && float64(steady.Failed)/float64(steady.Count) > 0.01 {
+			return fmt.Sprintf(
+					"The target failed %d of %d steady-state requests before the signal, so shutdown cannot be separated from a pre-existing load failure.",
+					steady.Failed, steady.Count),
+				map[string]any{"steady_failures": steady.Failed, "steady_requests": steady.Count}, true
+		}
 
 		got := f.Stat(PhaseInFlight).Count
 		if got >= p.MinInFlightSample {
@@ -64,7 +91,7 @@ var ruleSigtermIgnored = rule{
 		readinessUnchanged := !f.HadReadinessProbe || f.ReadinessFlippedAt == nil
 		stillRunning := f.ExitAt == nil || *f.ExitAt > f.SignalAt+p.GracePeriod
 
-		if !(listenerUnchanged && readinessUnchanged && stillRunning) {
+		if !listenerUnchanged || !readinessUnchanged || !stillRunning {
 			return "", nil, false
 		}
 		return "The process showed no reaction to the signal: it kept listening, kept reporting itself healthy, and did not exit.",

@@ -2,6 +2,7 @@ package analyze
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"time"
 
@@ -54,6 +55,8 @@ func (p Profile) Valid() bool {
 // under ProfileAuto and the default grace period.
 type TargetKind string
 
+// TargetProcess and the other target constants identify supported target
+// categories.
 const (
 	TargetProcess    TargetKind = "process"
 	TargetCommand    TargetKind = "command"
@@ -130,6 +133,10 @@ const (
 	DefaultAcceptWindow       = 5 * time.Second
 	DefaultDeregMin           = 500 * time.Millisecond
 	DefaultReadinessFlip      = time.Second
+	MaxPolicyDuration         = 24 * time.Hour
+	// MaxSignalSkew is the delivery lateness above which phase attribution is
+	// no longer trustworthy.
+	MaxSignalSkew = 50 * time.Millisecond
 )
 
 // PolicyFor returns the default policy for a profile.
@@ -233,6 +240,16 @@ func (p Policy) Validate() error {
 	if p.AcceptWindow < 0 {
 		return fmt.Errorf("accept window cannot be negative, got %v", p.AcceptWindow)
 	}
+	if p.DeregMin < 0 {
+		return fmt.Errorf("minimum deregistration window cannot be negative, got %v", p.DeregMin)
+	}
+	if p.ReadinessFlipBudget < 0 {
+		return fmt.Errorf("readiness flip budget cannot be negative, got %v", p.ReadinessFlipBudget)
+	}
+	if p.GracePeriod > MaxPolicyDuration || p.AcceptWindow > MaxPolicyDuration ||
+		p.DeregMin > MaxPolicyDuration || p.ReadinessFlipBudget > MaxPolicyDuration {
+		return fmt.Errorf("policy durations must not exceed %v", MaxPolicyDuration)
+	}
 	if p.AcceptWindow >= p.GracePeriod {
 		return fmt.Errorf(
 			"accept window %v must be shorter than the grace period %v, otherwise the service is required to keep accepting traffic until it is killed",
@@ -244,14 +261,21 @@ func (p Policy) Validate() error {
 	if p.MinInFlightSample < 1 {
 		return fmt.Errorf("minimum in-flight sample must be at least 1, got %d", p.MinInFlightSample)
 	}
-	if p.MaxInFlightDropPct < 0 || p.MaxInFlightDropPct > 100 {
+	if math.IsNaN(p.MaxInFlightDropPct) || math.IsInf(p.MaxInFlightDropPct, 0) ||
+		p.MaxInFlightDropPct < 0 || p.MaxInFlightDropPct > 100 {
 		return fmt.Errorf("maximum in-flight drop percentage must be between 0 and 100, got %v", p.MaxInFlightDropPct)
 	}
 	if p.MaxShutdownTime != nil && *p.MaxShutdownTime <= 0 {
 		return fmt.Errorf("maximum shutdown time must be positive, got %v", *p.MaxShutdownTime)
 	}
+	if p.MaxShutdownTime != nil && *p.MaxShutdownTime > MaxPolicyDuration {
+		return fmt.Errorf("maximum shutdown time must not exceed %v", MaxPolicyDuration)
+	}
 	if p.MinScore != nil && (*p.MinScore < 0 || *p.MinScore > 100) {
 		return fmt.Errorf("minimum score must be between 0 and 100, got %d", *p.MinScore)
+	}
+	if math.IsNaN(p.LatencySpikeFactor) || math.IsInf(p.LatencySpikeFactor, 0) || p.LatencySpikeFactor <= 0 {
+		return fmt.Errorf("latency spike factor must be finite and positive, got %v", p.LatencySpikeFactor)
 	}
 	return nil
 }

@@ -10,6 +10,8 @@ import (
 // Phase is where a request sits relative to the termination signal.
 type Phase string
 
+// PhaseWarmup and the other phase constants identify request timing relative
+// to the termination signal.
 const (
 	PhaseWarmup     Phase = "warmup"
 	PhaseSteady     Phase = "steady"
@@ -63,24 +65,27 @@ type Percentiles struct {
 // Deriving it once keeps each rule short and free of scanning logic, and means
 // a signature can be tested by handing it a Facts value directly.
 type Facts struct {
-	HasSignal bool
-	SignalAt  time.Duration
-	KillAt    *time.Duration
+	HasSignal  bool
+	SignalAt   time.Duration
+	SignalSkew time.Duration
+	KillAt     *time.Duration
 
 	HasExit    bool
 	ExitAt     *time.Duration
 	ExitCode   *int
 	ExitSignal string
 
-	HadListenerProbe    bool
-	ListenerClosedAt    *time.Duration
-	AcceptedAfterWindow bool
-	AcceptedAfterExit   bool
+	HadListenerProbe          bool
+	ListenerAcceptingAtSignal bool
+	ListenerClosedAt          *time.Duration
+	AcceptedAfterWindow       bool
+	AcceptedAfterExit         bool
 
-	HadReadinessProbe    bool
-	ReadinessEverHealthy bool
-	ReadinessFlippedAt   *time.Duration
-	ReadinessFlapped     bool
+	HadReadinessProbe        bool
+	ReadinessEverHealthy     bool
+	ReadinessHealthyAtSignal bool
+	ReadinessFlippedAt       *time.Duration
+	ReadinessFlapped         bool
 
 	Requests  []ClassifiedRequest
 	Stats     map[Phase]PhaseStats
@@ -91,20 +96,23 @@ type Facts struct {
 	BaselineLatency Percentiles
 	DrainLatency    Percentiles
 
-	ShutdownDuration *time.Duration
-	DroppedRecords   int
+	ShutdownDuration      *time.Duration
+	DroppedRecords        int
+	DroppedRequestRecords int
 }
 
 // BuildFacts derives the analysable view of a run.
 func BuildFacts(tl timeline.Timeline, policy Policy) Facts {
 	facts := Facts{
-		Stats:          map[Phase]PhaseStats{},
-		DroppedRecords: tl.Dropped,
+		Stats:                 map[Phase]PhaseStats{},
+		DroppedRecords:        tl.Dropped + tl.DroppedAuxiliary,
+		DroppedRequestRecords: tl.Dropped,
 	}
 
-	if at, ok := tl.SignalOffset(); ok {
+	if signal, at, ok := tl.TerminationSignal(); ok {
 		facts.HasSignal = true
 		facts.SignalAt = at
+		facts.SignalSkew = signal.Skew
 	}
 	if at, ok := tl.KillOffset(); ok {
 		kill := at
@@ -197,6 +205,9 @@ func (f *Facts) summariseListener(tl timeline.Timeline) {
 
 	for _, e := range samples {
 		accepting := e.Listener.Accepting
+		if !f.HasSignal || e.Offset < f.SignalAt {
+			f.ListenerAcceptingAtSignal = accepting
+		}
 
 		if f.HasSignal && e.Offset >= f.SignalAt {
 			if !accepting && f.ListenerClosedAt == nil {
@@ -243,6 +254,7 @@ func (f *Facts) summariseReadiness(tl timeline.Timeline) {
 		healthy := e.Readiness.Healthy
 
 		if !f.HasSignal || e.Offset < f.SignalAt {
+			f.ReadinessHealthyAtSignal = healthy
 			if healthy {
 				f.ReadinessEverHealthy = true
 			}
