@@ -2,12 +2,14 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -36,6 +38,7 @@ type runFlags struct {
 	pid            int
 	allowUnsafePID bool
 	docker         string
+	slowURL        string
 	containerPort  string
 	argv           []string
 
@@ -98,6 +101,7 @@ func parseRunFlags(args []string, stderr io.Writer) (*runFlags, error) {
 	f.fs.IntVar(&f.pid, "pid", 0, "attach to an existing process by id")
 	f.fs.StringVar(&f.docker, "docker", "", "target a running container by name or id")
 	f.fs.StringVar(&f.containerPort, "container-port", "", "container port to probe, when the container publishes more than one")
+	f.fs.BoolVar(&f.allowUnsafePID, "allow-unsafe-pid", false, "permit PID 1 when it really is the service inside a container")
 
 	f.fs.StringVar(&f.url, "url", "", "endpoint to load (required)")
 	f.fs.StringVar(&f.method, "method", "", "HTTP method (default GET)")
@@ -106,6 +110,7 @@ func parseRunFlags(args []string, stderr io.Writer) (*runFlags, error) {
 	f.fs.StringVar(&f.bodyFile, "body-file", "", "read the request body from a file")
 	f.fs.StringVar(&f.readinessURL, "readiness-url", "", "readiness endpoint to poll (strongly recommended)")
 	f.fs.BoolVar(&f.insecure, "insecure", false, "skip TLS certificate verification")
+	f.fs.StringVar(&f.slowURL, "slow-url", "", "deliberately slow endpoint used to guarantee in-flight requests")
 
 	f.fs.IntVar(&f.ensureInFlight, "ensure-in-flight", config.DefaultEnsureInFlight, "requests to hold in flight at the signal")
 	f.fs.Float64Var(&f.rps, "rps", 0, "fixed request rate; disables calibration")
@@ -130,7 +135,7 @@ func parseRunFlags(args []string, stderr io.Writer) (*runFlags, error) {
 	f.fs.Var(&f.ignore, "ignore", "demote signatures to informational (comma-separated or repeated)")
 	f.fs.IntVar(&f.trials, "trials", 0, "repeat the experiment this many times")
 	f.fs.DurationVar(&f.timeout, "timeout", 0, "wall-clock ceiling for the whole run (default: derived from the run's own budget)")
-	f.fs.IntVar(&f.maxRecords, "max-records", timeline.DefaultRecordLimit, "cap on recorded per-request events, so a long run cannot exhaust memory")
+	f.fs.IntVar(&f.maxRecords, "max-records", timeline.DefaultRecordLimit, "cap on high-volume evidence events, so a long run cannot exhaust memory")
 
 	f.fs.StringVar(&f.format, "format", string(report.FormatHuman), "output format: human, json, junit, markdown, ndjson")
 	f.fs.StringVar(&f.output, "output", "", "also write the report to this file")
@@ -146,9 +151,12 @@ func parseRunFlags(args []string, stderr io.Writer) (*runFlags, error) {
 	f.fs.Usage = func() { printRunUsageWithFlags(stderr, f.fs) }
 
 	if err := f.fs.Parse(args); err != nil {
-		if err == flag.ErrHelp {
+		if errors.Is(err, flag.ErrHelp) {
 			printRunUsageWithFlags(stderr, f.fs)
-			return nil, &usageError{err}
+			return nil, err
+		}
+		if strings.Contains(err.Error(), "for flag -header") {
+			return nil, usagef("invalid --header value; expected `Name: value` with a valid HTTP header")
 		}
 		return nil, usagef("%w", err)
 	}
@@ -158,15 +166,13 @@ func parseRunFlags(args []string, stderr io.Writer) (*runFlags, error) {
 	return f, nil
 }
 
-func printRunUsage(w io.Writer) { printRunUsageWithFlags(w, nil) }
-
 // printRunUsageWithFlags prints the curated guide, then every flag.
 //
 // The curated part exists because a bare alphabetical dump does not tell anyone
 // what a profile is. The full list follows it because the guide used to promise
 // "run --help to see every flag" and then print itself, which was a lie.
 func printRunUsageWithFlags(w io.Writer, fs *flag.FlagSet) {
-	fmt.Fprint(w, `Usage: shutdowncheck run [flags] [-- <command> [args...]]
+	writeBestEffort(w, `Usage: shutdowncheck run [flags] [-- <command> [args...]]
 
 Terminates a target under load and reports which stage of shutdown failed.
 
@@ -195,15 +201,18 @@ asynchronous; under strict it must stop accepting immediately. Run
 		return
 	}
 
-	fmt.Fprint(w, "\nAll flags:\n")
+	writeBestEffort(w, "\nAll flags:\n")
 	fs.SetOutput(w)
 	fs.PrintDefaults()
-	fmt.Fprintln(w)
+	writeBestEffort(w, "\n")
 }
 
 func runCommand(args []string, stdout, stderr io.Writer) int {
 	flags, err := parseRunFlags(args, stderr)
 	if err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return schema.ExitPass
+		}
 		return exitFor(err, stderr)
 	}
 
@@ -267,6 +276,13 @@ func (f *runFlags) resolve() (*config.Resolved, error) {
 	if err := f.applyOverrides(resolved); err != nil {
 		return nil, err
 	}
+	// Explicit body flags win before configured files are opened. Otherwise a
+	// stale body_file can make a valid --body override fail before it is applied.
+	if path != "" {
+		if err := materializeRequestBodies(resolved, filepath.Dir(path)); err != nil {
+			return nil, usagef("%w", err)
+		}
+	}
 	if err := resolved.Policy.Validate(); err != nil {
 		return nil, usagef("%w", err)
 	}
@@ -295,7 +311,7 @@ func (f *runFlags) buildFromFlags() (*config.Resolved, error) {
 		if f.body != "" {
 			return nil, usagef("set either --body or --body-file, not both")
 		}
-		data, err := os.ReadFile(filepath.Clean(f.bodyFile)) // #nosec G304 -- operator-supplied path
+		data, err := readRequestBody(f.bodyFile)
 		if err != nil {
 			return nil, usagef("read --body-file: %w", err)
 		}
@@ -311,6 +327,7 @@ func (f *runFlags) buildFromFlags() (*config.Resolved, error) {
 		Name: "cli",
 		Probe: config.Probe{
 			ReadinessURL: f.readinessURL,
+			SlowURL:      f.slowURL,
 			Insecure:     f.insecure,
 			Requests: []config.Request{{
 				Name: "request", Weight: 1, URL: f.url, Method: method,
@@ -329,6 +346,9 @@ func (f *runFlags) buildFromFlags() (*config.Resolved, error) {
 		},
 		Trials:            1,
 		CaptureTargetLogs: f.captureLogs,
+	}
+	if f.rps > 0 {
+		resolved.Traffic.EnsureInFlight = 0
 	}
 
 	switch {
@@ -357,80 +377,39 @@ func (f *runFlags) buildFromFlags() (*config.Resolved, error) {
 	return resolved, nil
 }
 
-// applyOverrides layers explicitly-set flags over whatever the configuration
-// produced. Only flags the user actually typed are applied, so a default can
-// never silently overwrite a configured value.
+// applyOverrides layers only explicitly-set flags over the selected scenario.
 func (f *runFlags) applyOverrides(r *config.Resolved) error {
-	if f.set["profile"] {
-		profile := analyze.Profile(f.profile).Resolve(r.Target.Kind)
-		policy, err := analyze.PolicyFor(profile)
-		if err != nil {
-			return usagef("%w", err)
-		}
-		policy.MaxInFlightDropPct = r.Policy.MaxInFlightDropPct
-		policy.MaxShutdownTime = r.Policy.MaxShutdownTime
-		policy.MinScore = r.Policy.MinScore
-		r.Policy = policy
-		r.Termination.GracePeriod = policy.GracePeriod
+	targetChanged, err := f.applyTargetOverride(r)
+	if err != nil {
+		return err
 	}
 
-	if f.set["grace-period"] {
-		r.Policy.GracePeriod = f.gracePeriod
-		r.Termination.GracePeriod = f.gracePeriod
+	switch {
+	case f.set["profile"]:
+		if err := reprofile(r, analyze.Profile(f.profile).Resolve(r.Target.Kind)); err != nil {
+			return err
+		}
+	case targetChanged && r.PolicyOverrides.ProfileWasAuto:
+		if err := reprofile(r, analyze.ProfileAuto.Resolve(r.Target.Kind)); err != nil {
+			return err
+		}
 	}
-	if f.set["accept-window"] {
-		r.Policy.AcceptWindow = f.acceptWindow
+
+	if err := f.applyProbeOverrides(r); err != nil {
+		return err
 	}
-	if f.set["max-inflight-drop-pct"] {
-		r.Policy.MaxInFlightDropPct = f.maxDropPct
-	}
-	if f.set["max-shutdown-time"] {
-		d := f.maxShutdownTime
-		r.Policy.MaxShutdownTime = &d
-	}
-	if f.set["min-score"] {
-		s := f.minScore
-		r.Policy.MinScore = &s
-	}
+	f.applyLoadOverrides(r)
+	f.applyTerminationOverrides(r)
+	f.applyGateOverrides(r)
+
 	if f.set["trials"] {
 		r.Trials = f.trials
-	}
-	if f.set["prestop-sleep"] {
-		r.Termination.PreStopSleep = f.preStopSleep
-	}
-	if f.set["enforce-sigkill"] {
-		r.Termination.EnforceSigkill = f.enforceSigkill
-	}
-	if f.set["readiness-url"] {
-		r.Probe.ReadinessURL = f.readinessURL
 	}
 	if f.set["capture-target-logs"] {
 		r.CaptureTargetLogs = f.captureLogs
 	}
 
-	for _, id := range f.ignore {
-		if _, ok := analyze.Lookup(analyze.SignatureID(id)); !ok {
-			return usagef("unknown signature %q in --ignore", id)
-		}
-		r.Policy = r.Policy.WithSeverity(analyze.SignatureID(id), schema.SeverityInfo)
-	}
-	for _, id := range f.failOn {
-		if _, ok := analyze.Lookup(analyze.SignatureID(id)); !ok {
-			return usagef("unknown signature %q in --fail-on", id)
-		}
-		r.Policy = r.Policy.WithSeverity(analyze.SignatureID(id), schema.SeverityError)
-	}
-
-	if !report.Format(f.format).Valid() {
-		return usagef("unknown format %q; valid values are %v", f.format, report.Formats())
-	}
-	if f.stack != "" && !remediate.Stack(f.stack).Valid() {
-		return usagef("unknown stack %q; valid values are %v", f.stack, remediate.Stacks())
-	}
-	if r.Trials < 1 {
-		r.Trials = 1
-	}
-	return nil
+	return f.validateResolved(r)
 }
 
 type trialOutcome struct {
@@ -440,8 +419,8 @@ type trialOutcome struct {
 
 func executeTrials(ctx context.Context, flags *runFlags, resolved *config.Resolved, stderr io.Writer) (analyze.Result, error) {
 	var (
-		results []analyze.Result
-		last    trialOutcome
+		results  []analyze.Result
+		outcomes []trialOutcome
 	)
 
 	if err := resolveDockerURLs(ctx, flags, resolved); err != nil {
@@ -450,7 +429,7 @@ func executeTrials(ctx context.Context, flags *runFlags, resolved *config.Resolv
 
 	for trial := 1; trial <= resolved.Trials; trial++ {
 		if !flags.quiet && resolved.Trials > 1 {
-			fmt.Fprintf(stderr, "trial %d of %d\n", trial, resolved.Trials)
+			writefBestEffort(stderr, "trial %d of %d\n", trial, resolved.Trials)
 		}
 
 		outcome, err := executeOnce(ctx, flags, resolved, trial)
@@ -458,15 +437,20 @@ func executeTrials(ctx context.Context, flags *runFlags, resolved *config.Resolv
 			return analyze.Result{}, err
 		}
 		results = append(results, outcome.analysis)
-		last = outcome
+		outcomes = append(outcomes, outcome)
 	}
 
-	aggregated, err := analyze.Aggregate(results)
+	aggregated, source, err := analyze.AggregateWithSource(results)
 	if err != nil {
 		return analyze.Result{}, err
 	}
-	aggregated.Facts = last.analysis.Facts
-	flags.lastTimeline = last.tl
+	flags.lastTimeline = outcomes[source].tl
+	if context := flags.lastTimeline.Meta.Analysis; context != nil {
+		context.Trials = timeline.AnalysisTrials{
+			Total: aggregated.Report.Run.Trials.Total, Failed: aggregated.Report.Run.Trials.Failed,
+			Consistent: aggregated.Report.Run.Trials.Consistent,
+		}
+	}
 	return aggregated, nil
 }
 
@@ -485,33 +469,57 @@ func resolveDockerURLs(ctx context.Context, flags *runFlags, resolved *config.Re
 		return nil
 	}
 
-	needsHost := strings.HasPrefix(resolved.Probe.ReadinessURL, "/")
+	needsURLHost := isPathOnlyURL(resolved.Target.Ready.URL) ||
+		isPathOnlyURL(resolved.Probe.ReadinessURL) ||
+		isPathOnlyURL(resolved.Probe.SlowURL)
 	for _, req := range resolved.Probe.Requests {
-		if strings.HasPrefix(req.URL, "/") {
-			needsHost = true
+		if isPathOnlyURL(req.URL) {
+			needsURLHost = true
 		}
 	}
-	if !needsHost && flags.containerPort == "" {
-		return nil
-	}
-
 	state, err := target.InspectContainer(ctx, resolved.Target.Docker)
 	if err != nil {
 		return err
 	}
-	addr, err := target.ResolveContainerPort(state, flags.containerPort)
-	if err != nil {
-		return err
+	return applyDockerResolution(flags, resolved, state, needsURLHost)
+}
+
+func applyDockerResolution(flags *runFlags, resolved *config.Resolved, state target.ContainerState, needsURLHost bool) error {
+	if !target.ValidContainerID(state.ID) {
+		return fmt.Errorf("docker inspect returned an invalid container ID")
+	}
+	// Port mappings and later signals must refer to the same immutable object.
+	resolved.Target.Docker = state.ID
+	if resolved.Target.Ready.Port > 0 {
+		readyAddr, err := target.ResolveContainerPort(state, strconv.Itoa(resolved.Target.Ready.Port))
+		if err != nil {
+			return fmt.Errorf("resolve target readiness port: %w", err)
+		}
+		resolved.Target.Ready.Addr = readyAddr
+		resolved.Target.Ready.Port = 0
 	}
 
-	base := "http://" + addr
+	var base string
+	if needsURLHost || flags.containerPort != "" {
+		addr, err := target.ResolveContainerPort(state, flags.containerPort)
+		if err != nil {
+			return err
+		}
+		base = "http://" + addr
+	}
 	for i := range resolved.Probe.Requests {
-		if strings.HasPrefix(resolved.Probe.Requests[i].URL, "/") {
+		if isPathOnlyURL(resolved.Probe.Requests[i].URL) {
 			resolved.Probe.Requests[i].URL = base + resolved.Probe.Requests[i].URL
 		}
 	}
-	if strings.HasPrefix(resolved.Probe.ReadinessURL, "/") {
+	if isPathOnlyURL(resolved.Target.Ready.URL) {
+		resolved.Target.Ready.URL = base + resolved.Target.Ready.URL
+	}
+	if isPathOnlyURL(resolved.Probe.ReadinessURL) {
 		resolved.Probe.ReadinessURL = base + resolved.Probe.ReadinessURL
+	}
+	if isPathOnlyURL(resolved.Probe.SlowURL) {
+		resolved.Probe.SlowURL = base + resolved.Probe.SlowURL
 	}
 	return nil
 }
@@ -574,13 +582,16 @@ func executeOnce(ctx context.Context, flags *runFlags, resolved *config.Resolved
 		TargetInFlight:  resolved.Traffic.EnsureInFlight,
 		MaxRPS:          resolved.Traffic.MaxRPS,
 		ConcurrencyCap:  resolved.Traffic.ConcurrencyCap,
+		SlowURL:         resolved.Probe.SlowURL,
 	}
 	if !resolved.Traffic.Calibrate {
 		options.FixedRate = resolved.Traffic.RPS
 	}
 
 	if resolved.Probe.ReadinessURL != "" {
-		options.Readiness = probe.NewReadiness(resolved.Probe.ReadinessURL, 2*time.Second, resolved.Probe.Insecure, now)
+		readiness := probe.NewReadiness(resolved.Probe.ReadinessURL, 2*time.Second, resolved.Probe.Insecure, now)
+		defer readiness.Close()
+		options.Readiness = readiness
 	}
 	if addr, err := probe.AddrFromURL(resolved.Probe.Requests[0].URL); err == nil {
 		options.Listener = probe.NewListener(addr, time.Second, now)
@@ -596,37 +607,60 @@ func executeOnce(ctx context.Context, flags *runFlags, resolved *config.Resolved
 		return trialOutcome{}, &targetError{err}
 	}
 
-	analysis := analyze.Analyze(analyze.Input{
+	input := analysisInput(
+		resolved,
+		outcome,
+		tgt.Describe(),
+		string(remediate.DetectStack(remediate.Hints{Override: flags.stack, Argv: resolved.Target.Command})),
+	)
+	outcome.Timeline.Meta.Analysis = encodeAnalysisContext(input)
+	input.Timeline = outcome.Timeline
+	analysis := analyze.Analyze(input)
+
+	return trialOutcome{analysis: analysis, tl: outcome.Timeline}, nil
+}
+
+func analysisInput(resolved *config.Resolved, outcome run.Result, desc target.Descriptor, detectedStack string) analyze.Input {
+	return analyze.Input{
 		Timeline:    outcome.Timeline,
 		Policy:      resolved.Policy,
 		ToolVersion: Version,
 		Target: analyze.TargetInfo{
 			Kind: resolved.Target.Kind, Label: resolved.Target.Label,
-			PID:           tgt.Describe().PID,
-			DetectedStack: string(remediate.DetectStack(remediate.Hints{Override: flags.stack, Argv: resolved.Target.Command})),
+			PID: desc.PID, DetectedStack: detectedStack,
 		},
 		Probe: analyze.ProbeInfo{
-			URL: resolved.Probe.Requests[0].URL, Method: resolved.Probe.Requests[0].Method,
-			ReadinessURL: resolved.Probe.ReadinessURL,
+			URL:          redact.URL(resolved.Probe.Requests[0].URL),
+			Method:       resolved.Probe.Requests[0].Method,
+			ReadinessURL: redact.URL(resolved.Probe.ReadinessURL),
 			Insecure:     resolved.Probe.Insecure,
 		},
 		Load: analyze.LoadInfo{
-			Calibrated: outcome.Calibrated, RPS: outcome.Calibration.RPS,
-			TargetInFlight: resolved.Traffic.EnsureInFlight,
-			Achievable:     outcome.Calibration.Achievable,
-			Warnings:       outcome.Calibration.Warnings,
+			Calibrated:      outcome.Calibrated,
+			RPS:             outcome.Calibration.RPS,
+			TargetInFlight:  resolved.Traffic.EnsureInFlight,
+			BaselineLatency: outcome.Calibration.BaselineLatency,
+			GoalEvaluated:   outcome.Calibrated,
+			Achievable:      outcome.Calibration.Achievable,
+			Warnings:        outcome.Calibration.Warnings,
 		},
-	})
-
-	return trialOutcome{analysis: analysis, tl: outcome.Timeline}, nil
+	}
 }
 
 func buildTarget(resolved *config.Resolved, recorder *timeline.Recorder, now func() time.Duration) (target.Target, error) {
-	ready := target.ReadyCheck{URL: resolved.Target.Ready.URL, Timeout: resolved.Target.Ready.Timeout}
-	if ready.URL == "" && resolved.Probe.ReadinessURL != "" {
+	ready := target.ReadyCheck{
+		URL:      resolved.Target.Ready.URL,
+		Addr:     resolved.Target.Ready.Addr,
+		Timeout:  resolved.Target.Ready.Timeout,
+		Insecure: resolved.Probe.Insecure,
+	}
+	if !ready.Configured() && resolved.Target.Ready.Port > 0 {
+		ready.Addr = fmt.Sprintf("127.0.0.1:%d", resolved.Target.Ready.Port)
+	}
+	if !ready.Configured() && resolved.Probe.ReadinessURL != "" {
 		ready.URL = resolved.Probe.ReadinessURL
 	}
-	if ready.URL == "" {
+	if !ready.Configured() {
 		if addr, err := probe.AddrFromURL(resolved.Probe.Requests[0].URL); err == nil {
 			ready.Addr = addr
 		}
@@ -701,14 +735,33 @@ func emit(flags *runFlags, result analyze.Result, stdout io.Writer) error {
 // writeFile writes a report with restrictive permissions, since reports carry
 // internal hostnames and URLs.
 func writeFile(path string, render func(io.Writer) error) error {
-	f, err := os.OpenFile(filepath.Clean(path), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	clean := filepath.Clean(path)
+	dir := filepath.Dir(clean)
+	temp, err := os.CreateTemp(dir, "."+filepath.Base(clean)+".tmp-*")
 	if err != nil {
 		return fmt.Errorf("write %s: %w", path, err)
 	}
-	defer func() { _ = f.Close() }()
+	tempPath := temp.Name()
+	defer func() { _ = os.Remove(tempPath) }()
 
-	if err := render(f); err != nil {
+	if err := temp.Chmod(0o600); err != nil {
+		_ = temp.Close()
+		return fmt.Errorf("write %s: set permissions: %w", path, err)
+	}
+	if err := render(temp); err != nil {
+		_ = temp.Close()
 		return fmt.Errorf("write %s: %w", path, err)
+	}
+	if err := temp.Sync(); err != nil {
+		_ = temp.Close()
+		return fmt.Errorf("write %s: flush: %w", path, err)
+	}
+	if err := temp.Close(); err != nil {
+		return fmt.Errorf("write %s: close: %w", path, err)
+	}
+
+	if err := os.Rename(tempPath, clean); err != nil {
+		return fmt.Errorf("write %s: replace atomically: %w", path, err)
 	}
 	return nil
 }

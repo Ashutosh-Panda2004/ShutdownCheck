@@ -8,7 +8,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/shutdowncheck/shutdowncheck/internal/analyze"
+	"github.com/shutdowncheck/shutdowncheck/internal/config"
+	"github.com/shutdowncheck/shutdowncheck/internal/load"
 	"github.com/shutdowncheck/shutdowncheck/internal/redact"
+	runpkg "github.com/shutdowncheck/shutdowncheck/internal/run"
+	"github.com/shutdowncheck/shutdowncheck/internal/target"
 	"github.com/shutdowncheck/shutdowncheck/internal/timeline"
 	"github.com/shutdowncheck/shutdowncheck/pkg/schema"
 )
@@ -18,11 +23,12 @@ const (
 	querySecret    = "qs-DEADBEEF-must-never-appear"
 	argvSecret     = "argv-DEADBEEF-must-never-appear"
 	logSecret      = "log-DEADBEEF-must-never-appear"
+	headerSecret   = "header-DEADBEEF-must-never-appear"
 	passwordSecret = "pw-DEADBEEF-must-never-appear"
 )
 
 func allSecrets() []string {
-	return []string{querySecret, argvSecret, logSecret, passwordSecret}
+	return []string{querySecret, argvSecret, logSecret, headerSecret, passwordSecret}
 }
 
 // leakyRecording is a run that was handed credentials by every route the tool
@@ -59,6 +65,8 @@ func leakyRecording(t *testing.T) string {
 
 	rec.Record(timeline.LogAt(4*time.Second, "stdout",
 		redact.Message(`starting with upstream "https://svc/?token=`+logSecret+`"`)))
+	rec.Record(timeline.LogAt(4100*time.Millisecond, "stderr",
+		redact.Message("request failed Authorization: Bearer "+headerSecret)))
 
 	rec.Record(timeline.ReadinessAt(time.Second, timeline.ReadinessEvent{Status: 200, Healthy: true}))
 	rec.Record(timeline.ReadinessAt(7*time.Second, timeline.ReadinessEvent{Status: 200, Healthy: true}))
@@ -103,6 +111,34 @@ func TestSecretsNeverReachAnyReportFormat(t *testing.T) {
 			}
 			assertNoSecrets(t, stdout)
 		})
+	}
+}
+
+func TestLiveAnalysisInputRedactsURLsAndKeepsCalibration(t *testing.T) {
+	const secret = "live-report-secret-must-not-appear"
+	baseline := 125 * time.Millisecond
+	resolved := &config.Resolved{
+		Target: config.Target{Kind: analyze.TargetDocker, Label: "docker(api)"},
+		Probe: config.Probe{
+			Requests: []config.Request{{
+				URL:    "https://user:" + secret + "@example.test/work?token=" + secret,
+				Method: "GET",
+			}},
+			ReadinessURL: "https://example.test/ready?api_key=" + secret,
+		},
+		Traffic: config.Traffic{EnsureInFlight: 20},
+	}
+	outcome := runpkg.Result{
+		Calibrated: true,
+		Calibration: load.Calibration{
+			RPS: 160, BaselineLatency: baseline, Achievable: true,
+		},
+	}
+
+	input := analysisInput(resolved, outcome, target.Descriptor{PID: 42}, "go-net-http")
+	assertNoSecrets(t, input.Probe.URL+input.Probe.ReadinessURL)
+	if input.Load.BaselineLatency != baseline {
+		t.Errorf("baseline latency = %s, want %s", input.Load.BaselineLatency, baseline)
 	}
 }
 
@@ -157,7 +193,10 @@ func TestCommandLineSecretsAreRedacted(t *testing.T) {
 		"env assignment":  {"API_TOKEN=" + argvSecret, "./api"},
 		"underscore flag": {"./api", "--api_key=" + argvSecret},
 		"single dash":     {"./api", "-secret", argvSecret},
+		"colon flag":      {"./api", "--token:" + argvSecret},
+		"windows flag":    {"./api.exe", "/password:" + argvSecret},
 		"url in argv":     {"./api", "--upstream=https://x/y?secret=" + querySecret},
+		"database URL":    {"./api", "--database-url=postgres://user:" + passwordSecret + "@db.internal/app"},
 	}
 
 	for name, argv := range cases {
@@ -183,6 +222,30 @@ func TestCommandLineRedactionLeavesOrdinaryArgumentsAlone(t *testing.T) {
 	}
 	if strings.Contains(got, redact.Placeholder) {
 		t.Errorf("nothing here is sensitive, so nothing should be redacted: %s", got)
+	}
+}
+
+func TestMalformedHeaderFlagDoesNotLeakItsValue(t *testing.T) {
+	const secret = "header-parse-secret-must-not-appear"
+	code, _, stderr := execute(t, "run", "--header", "Authorization "+secret)
+
+	if code != schema.ExitUsage {
+		t.Fatalf("exit = %d, want usage", code)
+	}
+	if strings.Contains(stderr, secret) {
+		t.Fatalf("flag error leaked header value: %s", stderr)
+	}
+}
+
+func TestRunHelpDoesNotLeakPreviouslyParsedHeaders(t *testing.T) {
+	const secret = "help-header-secret-must-not-appear"
+	code, _, stderr := execute(t, "run", "--header", "Authorization: "+secret, "--help")
+
+	if code != schema.ExitPass {
+		t.Fatalf("exit = %d, want success\nstderr: %s", code, stderr)
+	}
+	if strings.Contains(stderr, secret) {
+		t.Fatalf("help output leaked a header value: %s", stderr)
 	}
 }
 

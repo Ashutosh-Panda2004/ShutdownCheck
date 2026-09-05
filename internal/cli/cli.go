@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/shutdowncheck/shutdowncheck/internal/analyze"
 	"github.com/shutdowncheck/shutdowncheck/internal/config"
+	"github.com/shutdowncheck/shutdowncheck/internal/redact"
 	"github.com/shutdowncheck/shutdowncheck/internal/remediate"
 	"github.com/shutdowncheck/shutdowncheck/pkg/schema"
 )
@@ -65,13 +67,15 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	case "validate":
 		err = validateCommand(rest, stdout)
 	case "version", "--version", "-v":
-		fmt.Fprintf(stdout, "shutdowncheck %s (commit %s, built %s)\n", Version, Commit, Date)
+		if _, err := fmt.Fprintf(stdout, "shutdowncheck %s (commit %s, built %s)\n", Version, Commit, Date); err != nil {
+			return exitFor(fmt.Errorf("write version: %w", err), stderr)
+		}
 		return schema.ExitPass
 	case "help", "--help", "-h":
 		printUsage(stdout)
 		return schema.ExitPass
 	default:
-		fmt.Fprintf(stderr, "shutdowncheck: unknown command %q\n\n", command)
+		writefBestEffort(stderr, "shutdowncheck: unknown command %q\n\n", redact.Text(command))
 		printUsage(stderr)
 		return schema.ExitUsage
 	}
@@ -87,22 +91,34 @@ func exitFor(err error, stderr io.Writer) int {
 
 	var usage *usageError
 	var target *targetError
+	safeError := redact.Message(err.Error())
 
 	switch {
+	case errors.Is(err, context.Canceled):
+		writeBestEffort(stderr, "shutdowncheck: interrupted\n")
+		return schema.ExitInterrupted
 	case errors.As(err, &usage):
-		fmt.Fprintf(stderr, "shutdowncheck: %v\n", err)
+		writefBestEffort(stderr, "shutdowncheck: %s\n", safeError)
 		return schema.ExitUsage
 	case errors.As(err, &target):
-		fmt.Fprintf(stderr, "shutdowncheck: %v\n", err)
+		writefBestEffort(stderr, "shutdowncheck: %s\n", safeError)
 		return schema.ExitTarget
 	default:
-		fmt.Fprintf(stderr, "shutdowncheck: %v\n", err)
+		writefBestEffort(stderr, "shutdowncheck: %s\n", safeError)
 		return schema.ExitInternal
 	}
 }
 
+func writeBestEffort(w io.Writer, text string) {
+	_, _ = io.WriteString(w, text)
+}
+
+func writefBestEffort(w io.Writer, format string, args ...any) {
+	_, _ = fmt.Fprintf(w, format, args...)
+}
+
 func printUsage(w io.Writer) {
-	fmt.Fprint(w, `shutdowncheck verifies that a service drains correctly when it is terminated.
+	writeBestEffort(w, `shutdowncheck verifies that a service drains correctly when it is terminated.
 
 Usage:
   shutdowncheck run [flags] [-- <command> [args...]]
@@ -141,8 +157,7 @@ func explainCommand(args []string, stdout io.Writer) error {
 	}
 
 	if fs.NArg() == 0 {
-		listSignatures(stdout)
-		return nil
+		return listSignatures(stdout)
 	}
 
 	id := analyze.SignatureID(strings.ToUpper(fs.Arg(0)))
@@ -151,22 +166,27 @@ func explainCommand(args []string, stdout io.Writer) error {
 		return usagef("%w", err)
 	}
 
-	fmt.Fprint(stdout, page)
-	return nil
+	_, err = io.WriteString(stdout, page)
+	return err
 }
 
-func listSignatures(w io.Writer) {
-	fmt.Fprintf(w, "Failure signatures. Run `shutdowncheck explain <ID>` for detail.\n\n")
+func listSignatures(w io.Writer) error {
+	if _, err := fmt.Fprintf(w, "Failure signatures. Run `shutdowncheck explain <ID>` for detail.\n\n"); err != nil {
+		return err
+	}
 
 	for _, info := range analyze.Catalog() {
 		stage := string(info.Stage)
 		if stage == "" {
 			stage = "--"
 		}
-		fmt.Fprintf(w, "  %-6s %-2s  %-28s %s\n", info.ID, stage, info.Name, info.Summary)
+		if _, err := fmt.Fprintf(w, "  %-6s %-2s  %-28s %s\n", info.ID, stage, info.Name, info.Summary); err != nil {
+			return err
+		}
 	}
 
-	fmt.Fprint(w, "\nStages refer to the seven stages of correct termination; see the project documentation.\n")
+	_, err := io.WriteString(w, "\nStages refer to the seven stages of correct termination; see the project documentation.\n")
+	return err
 }
 
 func validateCommand(args []string, stdout io.Writer) error {
@@ -183,15 +203,19 @@ func validateCommand(args []string, stdout io.Writer) error {
 	}
 
 	names := file.ScenarioNames()
-	fmt.Fprintf(stdout, "%s is valid: %d scenario(s)\n", *path, len(names))
+	if _, err := fmt.Fprintf(stdout, "%s is valid: %d scenario(s)\n", *path, len(names)); err != nil {
+		return err
+	}
 
 	for _, name := range names {
 		resolved, err := file.Resolve(name)
 		if err != nil {
 			return usagef("scenario %q: %w", name, err)
 		}
-		fmt.Fprintf(stdout, "  %-20s target=%s profile=%s trials=%d\n",
-			name, resolved.Target.Label, resolved.Policy.Profile, resolved.Trials)
+		if _, err := fmt.Fprintf(stdout, "  %-20s target=%s profile=%s trials=%d\n",
+			name, resolved.Target.Label, resolved.Policy.Profile, resolved.Trials); err != nil {
+			return err
+		}
 	}
 	return nil
 }

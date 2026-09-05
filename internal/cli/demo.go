@@ -1,9 +1,9 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"flag"
-	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -42,6 +42,7 @@ func demoCommand(args []string, stdout, stderr io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			printDemoUsage(stderr)
+			return schema.ExitPass
 		}
 		return schema.ExitUsage
 	}
@@ -53,18 +54,18 @@ func demoCommand(args []string, stdout, stderr io.Writer) int {
 
 	self, err := os.Executable()
 	if err != nil {
-		fmt.Fprintf(stderr, "shutdowncheck: cannot locate this binary to run the demo: %v\n", err)
+		writefBestEffort(stderr, "shutdowncheck: cannot locate this binary to run the demo: %v\n", err)
 		return schema.ExitInternal
 	}
 
 	port, err := freeLocalPort()
 	if err != nil {
-		fmt.Fprintf(stderr, "shutdowncheck: cannot reserve a port for the demo: %v\n", err)
+		writefBestEffort(stderr, "shutdowncheck: cannot reserve a port for the demo: %v\n", err)
 		return schema.ExitInternal
 	}
 	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
 
-	fmt.Fprint(stderr, demoPreamble)
+	writeBestEffort(stderr, demoPreamble)
 
 	runArgs := []string{
 		"run",
@@ -95,7 +96,7 @@ it produces 502s, because de-registration has not propagated yet.
 `
 
 func printDemoUsage(w io.Writer) {
-	fmt.Fprint(w, `Usage: shutdowncheck demo [flags]
+	writeBestEffort(w, `Usage: shutdowncheck demo [flags]
 
 Runs a real check against a deliberately broken service, so you can see what a
 report looks like before pointing the tool at anything of your own.
@@ -114,7 +115,7 @@ Try the same evidence under another deployment model:
 }
 
 func printDemoUnavailable(w io.Writer) {
-	fmt.Fprint(w, `shutdowncheck: the in-process demo needs POSIX signals, which this platform does not have.
+	writeBestEffort(w, `shutdowncheck: the in-process demo needs POSIX signals, which this platform does not have.
 
 You are getting this rather than a canned report because a demo that fabricated
 its evidence would undermine the only thing this tool sells.
@@ -133,7 +134,8 @@ See docs/adr/0015-demo-without-recorded-fallback.md for why.
 }
 
 func freeLocalPort() (int, error) {
-	l, err := net.Listen("tcp", "127.0.0.1:0")
+	var lc net.ListenConfig
+	l, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		return 0, err
 	}
@@ -157,7 +159,7 @@ func demoServer(args []string, stderr io.Writer) int {
 		return schema.ExitUsage
 	}
 	if *addr == "" {
-		fmt.Fprintln(stderr, "shutdowncheck: __demo-server is internal to `shutdowncheck demo` and is not a supported command")
+		writeBestEffort(stderr, "shutdowncheck: __demo-server is internal to `shutdowncheck demo` and is not a supported command\n")
 		return schema.ExitUsage
 	}
 
@@ -197,7 +199,7 @@ func demoServer(args []string, stderr io.Writer) int {
 	}()
 
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		fmt.Fprintln(stderr, "demo server:", err)
+		writefBestEffort(stderr, "demo server: %v\n", err)
 		return schema.ExitInternal
 	}
 	return schema.ExitPass

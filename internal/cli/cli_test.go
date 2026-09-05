@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -44,6 +45,30 @@ func TestExitCodes(t *testing.T) {
 				t.Errorf("exit code = %d, want %d", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestSubcommandHelpExitsSuccessfully(t *testing.T) {
+	for _, command := range []string{"run", "analyze", "demo"} {
+		t.Run(command, func(t *testing.T) {
+			code, _, stderr := execute(t, command, "--help")
+			if code != schema.ExitPass {
+				t.Fatalf("exit = %d, want 0\nstderr: %s", code, stderr)
+			}
+			if stderr == "" {
+				t.Fatal("help output is empty")
+			}
+		})
+	}
+}
+
+func TestCanceledRunUsesInterruptedExitCode(t *testing.T) {
+	var stderr bytes.Buffer
+	if got := exitFor(&targetError{context.Canceled}, &stderr); got != schema.ExitInterrupted {
+		t.Errorf("exit = %d, want %d", got, schema.ExitInterrupted)
+	}
+	if !strings.Contains(stderr.String(), "interrupted") {
+		t.Errorf("stderr = %q", stderr.String())
 	}
 }
 
@@ -212,8 +237,14 @@ func TestHeaderFlagParsing(t *testing.T) {
 	if h["Content-Type"] != "application/json" || h["X-Trace"] != "abc" {
 		t.Errorf("headers = %v", map[string]string(h))
 	}
+	if err := h.Set("x-trace:replacement"); err != nil {
+		t.Fatalf("Set case variant: %v", err)
+	}
+	if len(h) != 2 || h["X-Trace"] != "replacement" {
+		t.Errorf("case variants were not canonicalized: %v", map[string]string(h))
+	}
 
-	for _, bad := range []string{"no-colon", ": empty-name"} {
+	for _, bad := range []string{"no-colon", ": empty-name", "Bad Header: value", "X-Test: ok\r\ninjected: value"} {
 		if err := h.Set(bad); err == nil {
 			t.Errorf("Set(%q) should have failed", bad)
 		}
