@@ -2,7 +2,12 @@ package cli
 
 import (
 	"fmt"
+	"net/http"
+	"sort"
 	"strings"
+
+	"github.com/shutdowncheck/shutdowncheck/internal/probe"
+	"github.com/shutdowncheck/shutdowncheck/internal/redact"
 )
 
 // repeatedString collects a flag given more than once.
@@ -44,9 +49,10 @@ func (h *headerList) String() string {
 	}
 
 	parts := make([]string, 0, len(*h))
-	for name, value := range *h {
-		parts = append(parts, name+": "+value)
+	for name := range *h {
+		parts = append(parts, name+": "+redact.Placeholder)
 	}
+	sort.Strings(parts)
 	return strings.Join(parts, ", ")
 }
 
@@ -57,13 +63,17 @@ func (h *headerList) Set(value string) error {
 	}
 
 	name = strings.TrimSpace(name)
-	if name == "" {
-		return fmt.Errorf("header name must not be empty")
+	headerValue = strings.TrimSpace(headerValue)
+	if !probe.ValidHeaderName(name) {
+		return fmt.Errorf("header name is not a valid HTTP token")
+	}
+	if !probe.ValidHeaderValue(headerValue) {
+		return fmt.Errorf("header value must not contain control characters")
 	}
 
 	if *h == nil {
 		*h = headerList{}
 	}
-	(*h)[name] = strings.TrimSpace(headerValue)
+	(*h)[http.CanonicalHeaderKey(name)] = headerValue
 	return nil
 }

@@ -12,7 +12,10 @@ import (
 
 // minimumRunCeiling keeps the derived ceiling sane for very short runs, where
 // three times almost nothing is still almost nothing.
-const minimumRunCeiling = 2 * time.Minute
+const (
+	minimumRunCeiling = 2 * time.Minute
+	maximumRunCeiling = 30 * 24 * time.Hour
+)
 
 // runCeiling returns the wall-clock limit for the whole invocation.
 //
@@ -22,11 +25,15 @@ const minimumRunCeiling = 2 * time.Minute
 // performance budget, so tripping it should mean something is genuinely stuck
 // rather than that the machine was busy.
 func runCeiling(r *config.Resolved) time.Duration {
+	readiness := r.Target.Ready.Timeout
+	if readiness < 30*time.Second {
+		readiness = 30 * time.Second
+	}
 	perTrial := r.Traffic.Warmup +
 		r.Traffic.Steady +
 		r.Termination.PreStopSleep +
 		r.Termination.GracePeriod +
-		30*time.Second // readiness wait, calibration and teardown
+		readiness
 
 	trials := r.Trials
 	if trials < 1 {
@@ -36,6 +43,9 @@ func runCeiling(r *config.Resolved) time.Duration {
 	ceiling := time.Duration(trials) * perTrial * 3
 	if ceiling < minimumRunCeiling {
 		return minimumRunCeiling
+	}
+	if ceiling > maximumRunCeiling {
+		return maximumRunCeiling
 	}
 	return ceiling
 }
@@ -78,7 +88,7 @@ func warnInsecure(w io.Writer, insecure bool) {
 	if !insecure {
 		return
 	}
-	fmt.Fprint(w, "\nWARNING: --insecure disables TLS certificate verification.\n"+
+	writeBestEffort(w, "\nWARNING: --insecure disables TLS certificate verification.\n"+
 		"         Traffic to this target is not authenticated, so the verdict\n"+
 		"         describes whatever answered, not necessarily your service.\n"+
 		"         This is recorded in the report.\n\n")
