@@ -405,7 +405,7 @@ Key structural decisions:
 
 ```
 shutdowncheck/
-├── cmd/shutdowncheck/          # main(); cobra command wiring only
+├── cmd/shutdowncheck/          # main(); standard-library CLI wiring only
 ├── internal/
 │   ├── cli/                    # flag definitions, config merge, subcommands
 │   ├── config/                 # YAML config model, defaults, validation
@@ -413,16 +413,17 @@ shutdowncheck/
 │   ├── load/                   # open-model scheduler, worker pool, calibration
 │   ├── probe/                  # HTTP prober (+httptrace), readiness, TCP listener probe
 │   ├── target/                 # Target interface: process, command, docker, (k8s)
-│   ├── timeline/               # event types, recorder, monotonic clock abstraction
+│   ├── timeline/               # event types, bounded recorder, NDJSON codec
+│   ├── clock/                  # system and manually-advanced clocks
 │   ├── analyze/                # classification, signature rules, verdict, scoring
 │   ├── remediate/              # stack fingerprinting + fix-hint catalogue
 │   └── report/                 # human/timeline, json, junit, markdown, badge renderers
 ├── pkg/schema/                 # PUBLIC versioned report types (importable by 3rd parties)
 ├── test/
-│   ├── conformance/            # broken/correct servers: go, node, python, java, dotnet
-│   ├── fixtures/               # synthetic timelines for pure analyzer tests
+│   ├── conformance/            # broken/correct servers: Go, Node.js, Python
 │   └── e2e/                    # end-to-end harness driving conformance servers
-├── action/                     # GitHub Action wrapper (action.yml + entrypoint)
+├── action.yml                  # Marketplace-discoverable composite Action
+├── action/                     # Action documentation
 ├── docs/
 │   ├── adr/                    # architecture decision records
 │   └── signatures/             # one page per SCxxx failure signature
@@ -560,7 +561,7 @@ The **independent TCP listener probe** dials the target port on a fixed cadence 
 - The scheduler is **open-model**: request dispatch times are pre-computed from the rate, so a slow server produces queueing (visible and measured) rather than silently reducing offered load — avoiding coordinated omission.
 - `--seed` makes any randomised element (jitter, weighted scenario selection) reproducible.
 - `--trials N` runs the full experiment N times. The reported verdict is the **worst** across trials; the report states consistency (`3/3 FAIL`, or `1/3 FAIL — flaky`). A flaky shutdown is itself a finding worth surfacing, not something to average away.
-- Signal delivery precision is measured and reported; if the host is too loaded to deliver on time (>50ms skew), the run is flagged as low-confidence.
+- Signal delivery precision is measured from the scheduled boundary; if the host or load generator is too delayed (>50ms skew), the run is `INCONCLUSIVE` because request phases are no longer trustworthy.
 
 ---
 
@@ -570,7 +571,7 @@ Each signature is an independent rule, individually unit-tested against syntheti
 
 | ID | Name | Stage | Default severity | Detection rule | What it costs you in production |
 |---|---|---|---|---|---|
-| `SC000` | `INSUFFICIENT_INFLIGHT` | — | inconclusive | fewer than `min_inflight_sample` requests in flight at $T_0$ | Nothing — but the test proved nothing. Never reported as PASS. |
+| `SC000` | `INSUFFICIENT_INFLIGHT` | — | inconclusive | insufficient, truncated or already-unhealthy baseline/in-flight evidence | Nothing directly, but the test proved nothing trustworthy. Never reported as PASS. |
 | `SC001` | `SIGTERM_IGNORED` | S1 | error | no listener/readiness/process change for the entire grace budget | Every deploy hard-kills the process; all in-flight work is destroyed. |
 | `SC002` | `SIGKILL_REQUIRED` | S7 | error | process alive at $T_0 + grace$ | Orchestrator `SIGKILL`s you on every deploy; deploys are also slower. |
 | `SC003` | `IN_FLIGHT_DROPPED` | S6 | error | ≥1 `in_flight` request failed | Users' in-progress requests fail on every deploy. The headline bug. |
@@ -673,6 +674,8 @@ shutdowncheck version
   -- <command> [args...]      spawn and manage the process (recommended)
   --pid <int>                 attach to an existing process
   --docker <name|id>          target a running container
+  --container-port <port>     TCP container port when several are published
+  --allow-unsafe-pid          permit PID 1 explicitly; never permits self
 ```
 
 **Probe**
@@ -683,21 +686,20 @@ shutdowncheck version
   --body <string> | --body-file <path>
   --readiness-url <url>       readiness/health endpoint to poll (strongly recommended)
   --slow-url <url>            deliberately slow endpoint, used to guarantee in-flight load
-  --listener-probe-interval   default 20ms
+  --observe-interval <dur>    readiness/listener cadence, default 20ms, min 5ms
   --insecure                  skip TLS verification (prints a warning; never implicit)
 ```
 
 **Load**
 ```
   --ensure-in-flight <n>      calibration goal, default 20
-  --rps <n>                   fixed rate; disables calibration
+  --rps <n>                   fixed rate; disables rate derivation, not warmup
   --max-rps <n>               calibration ceiling, default 2000
   --concurrency-cap <n>       max open sockets, default 512
   --warmup <dur>              default 3s
   --steady <dur>              pre-signal steady state, default 5s
   --request-timeout <dur>     default 10s
   --keep-alive                default true
-  --seed <int>                reproducible jitter / scenario selection
 ```
 
 **Termination**
@@ -729,7 +731,10 @@ shutdowncheck version
   --stack <id>                override stack detection for remediation hints
   --config <path>             default ./shutdowncheck.yaml if present
   --scenario <name>           select a named scenario from the config
-  --quiet | --verbose | --no-color
+  --timeout <dur>             whole-invocation ceiling; derived by default
+  --max-records <n>           request evidence cap, default 100k
+  --width <n>                 human report width, maximum 1000
+  --quiet | --no-color | --no-timeline
 ```
 
 ---
@@ -877,16 +882,17 @@ ShutdownCheck sends signals to processes and generates traffic — it must be tr
 - No egress other than to the configured target. No update checks, no telemetry, no analytics — ever.
 
 **Data handling**
-- `Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie`, `X-Api-Key` and any header matching a configurable secret pattern are **redacted** in all reports, logs and NDJSON output. Request headers and bodies are never recorded at all, which is a stronger guarantee than redacting them.
+- `Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie`, API-key/token/secret-style fields and URL credentials are **redacted** in all reports, logs and NDJSON output. Request headers and bodies are never recorded at all, which is a stronger guarantee than redacting them.
 - A target's argv is echoed back so a reader knows what was run, with secret-looking flags and environment assignments redacted (`--db-password=…`, `API_TOKEN=…`). Passing a credential on a command line is ordinary, and a report is uploaded to CI and shared — a longer and wider exposure than the process table it came from.
 - Captured target logs are size-capped (default 1MB) and scanned for the same redaction patterns.
 - Report files are written with `0600` permissions by default, since they may contain internal URLs and hostnames.
 - `--insecure` is recorded in the report as an explicit field, never omitted, so a reader can always tell "certificate verification was on" from "this report predates the field".
 
 **Resource safety**
-- Per-request records are bounded by `--max-records` (default 100k). Records past the cap are **dropped, with a notice recorded on the timeline**, rather than reservoir-sampled as the v0.2 draft proposed. Sampling would silently thin the requests around the signal, which is precisely the evidence every signature depends on; a timeline that has quietly lost its in-flight requests would produce a confident and wrong verdict. Signal, process and stage events are never dropped.
+- Request records are bounded by `--max-records` (default 100k), with a larger derived budget for connection/readiness/listener evidence. Records past either cap are **dropped with a timeline notice and force `INCONCLUSIVE`**, rather than being reservoir-sampled. Sampling would silently thin the events around the signal, precisely where every signature depends on complete evidence. Signal, process, stage and notice events are never dropped; logs have separate byte, line-length and line-count caps.
 - Response bodies are read with a hard byte cap and discarded; the tool never buffers full payloads.
 - Socket count is capped by `--concurrency-cap`; the scheduler applies back-pressure rather than unbounded goroutine growth.
+- Operational inputs are bounded before execution: 1,000,000 RPS, 65,536 concurrent sockets, 24 hours per phase, 100 trials, 30 days for an explicit whole-run timeout, 250,000 requested evidence records, 10MB per request body and 32MB across all configured request bodies.
 - Every network and process operation is `context`-bounded, and the whole run has a wall-clock ceiling (`--timeout`, derived from the run's own budget by default). Exceeding it exits `4`, not `5` as the v0.2 draft said: the overwhelmingly likely cause is a target that never became ready or never exited, and reporting that as an internal error would send users to the issue tracker instead of to their service.
 
 **Supply chain**
@@ -910,7 +916,7 @@ A tool whose entire value proposition is "trust my verdict" has an unusually hig
 
 **L4 — Robustness.** `go test -race` on everything; fuzzing on config and report parsers; a soak test running 200 consecutive runs asserting zero leaked processes, sockets or goroutines; a flakiness test that runs the same fixture 50 times and requires an identical verdict every time. **Determinism is a tested property, not an aspiration.**
 
-CI matrix: Linux and macOS on every PR (Docker-target tests Linux-only); Windows for build + Docker-target tests once D8 lands.
+CI matrix: Linux, macOS and Windows for build/unit coverage; real POSIX process conformance on Linux and macOS; real Docker-target conformance on Linux.
 
 ---
 
@@ -919,22 +925,23 @@ CI matrix: Linux and macOS on every PR (Docker-target tests Linux-only); Windows
 Distribution is a first-class feature, not an afterthought — the tool's whole premise is "drop it in anywhere."
 
 - **Binaries** for linux/macos/windows × amd64/arm64 via GoReleaser, attached to GitHub Releases, signed and with SBOMs.
-- **`go install github.com/<org>/shutdowncheck/cmd/shutdowncheck@latest`**
+- **`go install github.com/shutdowncheck/shutdowncheck/cmd/shutdowncheck@latest`**
 - **Homebrew tap**, **Scoop** manifest, and an install script (`curl … | sh`, with checksum verification documented).
-- **Container image** (`ghcr.io/<org>/shutdowncheck`), distroless, multi-arch — the zero-install path for CI.
-- **GitHub Action** in `action/`, published to the Marketplace:
+- **Container image** (`ghcr.io/shutdowncheck/shutdowncheck`), distroless, multi-arch — the zero-install path for CI.
+- **GitHub Action** at repository-root `action.yml`, published to the Marketplace:
 
 ```yaml
-- uses: <org>/shutdowncheck-action@v1
+- uses: shutdowncheck/shutdowncheck@v1.0.0
   with:
+    version: v1.0.0
     config: shutdowncheck.yaml
     scenario: api
     comment-on-pr: true
 ```
 
-  It runs the check, uploads the JSON report as an artifact, writes the Markdown report to the job summary, and optionally posts/updates a PR comment.
-- **Docs site** (`shutdowncheck.dev`) built from `docs/` — one page per signature is the long-tail SEO engine ("connection reset during kubernetes deploy" should land people on `SC004`).
-- **README** with an asciinema/GIF demo showing a broken server failing and the fixed one passing, plus the score badge.
+  It runs the check once, uploads that original JSON report, derives a Markdown job summary from the same report, and optionally posts/updates a PR comment.
+- **Documentation content** under `docs/`, including one generated page per signature. Deployment of `shutdowncheck.dev` remains a launch task rather than a completed code artifact.
+- **README** with a real command transcript and score-badge support. A recorded GIF remains a launch asset that must be captured on a POSIX machine.
 
 ---
 
@@ -985,9 +992,9 @@ Distribution is a first-class feature, not an afterthought — the tool's whole 
 1. **`SC006` default severity under `--profile auto`.** ✅ *Resolved in Phase 4.* Severity is profile-dependent: `error` under `lame-duck` and `kubernetes`, `warn` under `standalone` and `docker`, and `info` under `strict` — where closing the listener immediately is the requirement rather than the defect. The same evidence therefore reaches opposite conclusions under different deployment models, which is asserted directly by `TestProfileChangesTheVerdictForTheSameEvidence`.
 2. **Score weight calibration.** ✅ *Resolved in Phase 4.* The Section 9.2 table is pinned by `TestScoreBandsAreCalibrated`, which fixes the intended bands: a correct shutdown scores 100 (A), a single minor flaw stays in A, a service that closes its listener too early lands in B, and a thoroughly broken one lands in F. Changing a weight now fails that test rather than silently rescaling every published score.
 3. **Readiness auto-discovery.** ✅ *Resolved in Phase 3.* The tool does **not** guess at `/readyz`, `/healthz` or similar. Probing only happens against an explicitly configured endpoint, and `SC007` never fires when readiness was not probed. Guessing would mean an unconfigured probe could be mistaken for evidence, and absence of data must never be read as data.
-4. **NDJSON re-analysis subcommand.** ✅ *Resolved in Phase 5 — built.* `shutdowncheck analyze run.ndjson --profile kubernetes` re-judges a recorded run without repeating it. It was cheap because analysis is pure, and it is what makes the separation of measurement from interpretation concrete: the same recording passes under `standalone` and fails under `kubernetes`, which is asserted by `TestAnalyzeReJudgesRecordedEvidence`. It also gives maintainers a way to reproduce a misdiagnosis report exactly, from the NDJSON the reporter attached.
+4. **NDJSON re-analysis subcommand.** ✅ *Resolved in Phase 5 — built.* `shutdowncheck analyze run.ndjson` restores the sanitized effective policy, gates, target/probe/load metadata and multi-trial summary stored with the selected evidence. Supplying `--profile kubernetes` intentionally resets policy defaults and re-judges the same observations under that deployment model. Both paths are asserted by command-level tests.
 
-5. **Bundled conformance servers.** ✅ *Resolved in Phase 6 — see [ADR-0013](docs/adr/0013-demo-subcommand.md).* Nothing is embedded. `shutdowncheck demo` re-executes the binary through a hidden `__demo-server` subcommand and runs the ordinary `run` pipeline against it, so the demo is a real process receiving a real signal, measured by the production code path. Where signals do not exist — Windows, per [ADR-0008](docs/adr/0008-no-windows-process-targets.md) — it analyses a recorded run shipped alongside the binary and says clearly that it is a recording. A demo that fabricated its evidence would undermine the one property this tool exists to provide. *(Built in Phase 8, with the distribution work.)*
+5. **Bundled conformance servers.** ✅ *Resolved in Phase 6 — see [ADR-0013](docs/adr/0013-demo-subcommand.md) and [ADR-0015](docs/adr/0015-demo-without-recorded-fallback.md).* Nothing is embedded. `shutdowncheck demo` re-executes the binary through a hidden `__demo-server` subcommand and runs the ordinary pipeline against a real process. Where POSIX signals do not exist, it refuses honestly and prints the equivalent Docker invocation; it never fabricates or replays demo evidence. *(Built in Phase 8.)*
 
 ### Still open
 
@@ -996,7 +1003,3 @@ Nothing. Every question raised in v0.1 and v0.2 has been decided, and each decis
 ---
 
 *End of v0.2. Implementation proceeds against `DEVELOPMENT-PLAN.md`.*
-
----
-
-*End of v0.1 draft. Next step: work through the open questions above, lock the v1 feature list, then move to implementation planning (repo structure, module breakdown, test strategy).*
