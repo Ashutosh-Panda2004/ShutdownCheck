@@ -7,44 +7,66 @@ import (
 	"time"
 )
 
-// DefaultRecordLimit bounds how many detailed request records a single run
-// keeps. A default run records a few thousand, so this is a safety valve
-// against a pathological --rps rather than something users meet in practice.
-const DefaultRecordLimit = 100_000
+// Record limits bound request evidence. Connection and observer evidence gets
+// a larger derived budget because a request can legitimately produce multiple
+// connection events. Lifecycle events are always retained.
+const (
+	DefaultRecordLimit  = 100_000
+	MaxRecordLimit      = 250_000
+	auxiliaryMultiplier = 2
+)
 
 // Recorder is the single sink every observer writes into. It is safe for
 // concurrent use and never blocks a caller, because a probe stalling on the
 // recorder would distort the very latencies it is trying to measure.
 type Recorder struct {
-	mu         sync.Mutex
-	meta       Meta
-	events     []Event
-	seq        uint64
-	limit      int
-	dropped    int
-	overflowed bool
+	mu               sync.Mutex
+	meta             Meta
+	events           []Event
+	seq              uint64
+	limit            int
+	requests         int
+	auxiliary        int
+	dropped          int
+	droppedAuxiliary int
+	overflowed       bool
 }
 
-// NewRecorder returns a Recorder. A limit of zero or less means unbounded.
+// NewRecorder returns a Recorder. Non-positive limits use the safe default.
 func NewRecorder(meta Meta, limit int) *Recorder {
+	if limit <= 0 {
+		limit = DefaultRecordLimit
+	}
+	if limit > MaxRecordLimit {
+		limit = MaxRecordLimit
+	}
 	return &Recorder{meta: meta, limit: limit}
 }
 
 // Record stores an observation, assigning it a sequence number.
 //
-// Request records are the only kind subject to the limit. Stage, signal,
-// process and listener events are few and are load-bearing for the verdict, so
-// dropping one to save memory would trade correctness for nothing.
+// Request records use the configured limit. Connection and observer records
+// use a derived budget large enough for open/close events around every request.
+// Stage, signal, process, log and notice events do not consume either budget.
+// Logs are independently byte- and line-bounded by target.lineWriter.
 func (r *Recorder) Record(e Event) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if e.Kind == KindRequest && r.limit > 0 && len(r.events) >= r.limit {
-		r.dropped++
+	overflow := e.Kind == KindRequest && r.requests >= r.limit
+	if auxiliaryEvent(e.Kind) && r.auxiliary >= auxiliaryMultiplier*r.limit {
+		overflow = true
+	}
+	if overflow {
+		if e.Kind == KindRequest {
+			r.dropped++
+		} else {
+			r.droppedAuxiliary++
+		}
 		if !r.overflowed {
 			r.overflowed = true
 			r.appendLocked(NoticeAt(e.Offset, "warn", "record_limit_reached", fmt.Sprintf(
-				"record limit of %d reached; further request detail is not retained and this run's confidence is reduced",
+				"record limit of %d reached; further high-volume evidence is not retained and this run is inconclusive",
 				r.limit,
 			)))
 		}
@@ -52,6 +74,20 @@ func (r *Recorder) Record(e Event) {
 	}
 
 	r.appendLocked(e)
+	if e.Kind == KindRequest {
+		r.requests++
+	} else if auxiliaryEvent(e.Kind) {
+		r.auxiliary++
+	}
+}
+
+func auxiliaryEvent(kind Kind) bool {
+	switch kind {
+	case KindConnection, KindReadiness, KindListener:
+		return true
+	default:
+		return false
+	}
 }
 
 func (r *Recorder) appendLocked(e Event) {
@@ -75,11 +111,11 @@ func (r *Recorder) Len() int {
 	return len(r.events)
 }
 
-// Dropped reports how many request records were discarded at the limit.
+// Dropped reports how many high-volume evidence records were discarded.
 func (r *Recorder) Dropped() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.dropped
+	return r.dropped + r.droppedAuxiliary
 }
 
 // Snapshot returns an immutable copy of everything recorded so far, ordered by
@@ -96,11 +132,14 @@ func (r *Recorder) Snapshot() Timeline {
 	copy(events, r.events)
 	sortEvents(events)
 
-	return Timeline{Meta: r.meta, Events: events, Dropped: r.dropped}
+	return Timeline{
+		Meta: r.meta, Events: events,
+		Dropped: r.dropped, DroppedAuxiliary: r.droppedAuxiliary,
+	}
 }
 
 func sortEvents(events []Event) {
-	sort.Slice(events, func(i, j int) bool {
+	sort.SliceStable(events, func(i, j int) bool {
 		if events[i].Offset != events[j].Offset {
 			return events[i].Offset < events[j].Offset
 		}
@@ -111,9 +150,10 @@ func sortEvents(events []Event) {
 // Timeline is an immutable record of a run. Analysis consumes it and nothing
 // else; see docs/adr/0011-pure-analysis-core.md.
 type Timeline struct {
-	Meta    Meta
-	Events  []Event
-	Dropped int
+	Meta             Meta
+	Events           []Event
+	Dropped          int
+	DroppedAuxiliary int
 }
 
 // EventsOfKind returns every event of the given kind, in timeline order.
@@ -164,12 +204,18 @@ func (t Timeline) Requests() []RequestEvent {
 // is a separate event, and treating it as the origin would collapse the whole
 // drain window.
 func (t Timeline) SignalOffset() (time.Duration, bool) {
+	_, offset, ok := t.TerminationSignal()
+	return offset, ok
+}
+
+// TerminationSignal returns the first graceful signal and its offset.
+func (t Timeline) TerminationSignal() (SignalEvent, time.Duration, bool) {
 	for _, e := range t.Events {
 		if e.Kind == KindSignal && e.Signal != nil && e.Signal.Signal != "KILL" {
-			return e.Offset, true
+			return *e.Signal, e.Offset, true
 		}
 	}
-	return 0, false
+	return SignalEvent{}, 0, false
 }
 
 // KillOffset returns when SIGKILL was delivered, if it was.

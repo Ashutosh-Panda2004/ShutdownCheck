@@ -6,6 +6,7 @@ import "time"
 // matching its kind.
 type Kind string
 
+// KindMeta and the other kind constants identify event payload variants.
 const (
 	KindMeta       Kind = "meta"
 	KindStage      Kind = "stage"
@@ -24,6 +25,7 @@ const (
 // instant, which matters when a user disputes a verdict.
 type Stage string
 
+// StagePreflight and the other stage constants identify runner state changes.
 const (
 	StagePreflight   Stage = "preflight"
 	StageStartTarget Stage = "start_target"
@@ -45,6 +47,7 @@ const (
 // connection and then never answered. Those are three different bugs.
 type Outcome string
 
+// OutcomeOK and the other outcome constants classify network results.
 const (
 	OutcomeOK        Outcome = "ok"
 	OutcomeHTTPError Outcome = "http_error"
@@ -64,6 +67,7 @@ func (o Outcome) Succeeded() bool { return o == OutcomeOK }
 // ConnPhase marks a point in a connection's life.
 type ConnPhase string
 
+// ConnOpen and the other connection phases identify socket lifecycle events.
 const (
 	ConnOpen  ConnPhase = "open"
 	ConnReuse ConnPhase = "reuse"
@@ -75,6 +79,7 @@ const (
 // a socket the client still considered usable.
 type ConnTermination string
 
+// TermFIN and the other termination constants classify how a socket ended.
 const (
 	TermFIN     ConnTermination = "fin"
 	TermRST     ConnTermination = "rst"
@@ -85,6 +90,7 @@ const (
 // ProcPhase marks a point in the target process's life.
 type ProcPhase string
 
+// ProcStarted and the other process phases identify process lifecycle events.
 const (
 	ProcStarted      ProcPhase = "started"
 	ProcReady        ProcPhase = "ready"
@@ -94,13 +100,85 @@ const (
 
 // Meta describes the run. It is emitted as the first line of the NDJSON stream.
 type Meta struct {
-	ToolVersion string    `json:"tool_version"`
-	StartedAt   time.Time `json:"started_at"`
-	Target      string    `json:"target,omitempty"`
-	Profile     string    `json:"profile,omitempty"`
-	Seed        int64     `json:"seed"`
-	Trial       int       `json:"trial"`
-	Trials      int       `json:"trials"`
+	ToolVersion      string           `json:"tool_version"`
+	StartedAt        time.Time        `json:"started_at"`
+	Target           string           `json:"target,omitempty"`
+	Profile          string           `json:"profile,omitempty"`
+	Seed             int64            `json:"seed"`
+	Trial            int              `json:"trial"`
+	Trials           int              `json:"trials"`
+	Dropped          int              `json:"dropped,omitempty"`
+	DroppedAuxiliary int              `json:"dropped_auxiliary,omitempty"`
+	Analysis         *AnalysisContext `json:"analysis,omitempty"`
+}
+
+// AnalysisContext is the effective, sanitized interpretation context stored
+// with evidence so a default replay reproduces the original report. It remains
+// separate from events so an explicit profile can still re-judge them.
+type AnalysisContext struct {
+	Version int            `json:"version"`
+	Target  AnalysisTarget `json:"target"`
+	Probe   AnalysisProbe  `json:"probe"`
+	Load    AnalysisLoad   `json:"load"`
+	Policy  AnalysisPolicy `json:"policy"`
+	Trials  AnalysisTrials `json:"trials"`
+}
+
+// AnalysisTarget is the report-safe target metadata used by analysis.
+type AnalysisTarget struct {
+	Kind          string `json:"kind,omitempty"`
+	Label         string `json:"label,omitempty"`
+	PID           int    `json:"pid,omitempty"`
+	DetectedStack string `json:"detected_stack,omitempty"`
+}
+
+// AnalysisProbe is the report-safe probe metadata used by analysis.
+type AnalysisProbe struct {
+	URL          string `json:"url,omitempty"`
+	Method       string `json:"method,omitempty"`
+	ReadinessURL string `json:"readiness_url,omitempty"`
+	Insecure     bool   `json:"insecure"`
+}
+
+// AnalysisLoad is the calibrated load metadata used by analysis.
+type AnalysisLoad struct {
+	Calibrated      bool          `json:"calibrated"`
+	RPS             float64       `json:"rps"`
+	TargetInFlight  int           `json:"target_in_flight"`
+	BaselineLatency time.Duration `json:"baseline_latency_ns"`
+	GoalEvaluated   bool          `json:"goal_evaluated"`
+	Achievable      bool          `json:"achievable"`
+	Warnings        []string      `json:"warnings,omitempty"`
+}
+
+// AnalysisPolicy is a serialization-safe copy of the effective policy.
+type AnalysisPolicy struct {
+	Profile                   string             `json:"profile"`
+	AcceptWindow              time.Duration      `json:"accept_window_ns"`
+	RequireAcceptDuringWindow bool               `json:"require_accept_during_window"`
+	DeregMin                  time.Duration      `json:"dereg_min_ns"`
+	ReadinessFlipBudget       time.Duration      `json:"readiness_flip_budget_ns"`
+	RequireReadinessFlip      bool               `json:"require_readiness_flip"`
+	GracePeriod               time.Duration      `json:"grace_period_ns"`
+	MaxShutdownTime           *time.Duration     `json:"max_shutdown_time_ns,omitempty"`
+	MinInFlightSample         int                `json:"min_in_flight_sample"`
+	MaxInFlightDropPct        float64            `json:"max_inflight_drop_pct"`
+	MinScore                  *int               `json:"min_score,omitempty"`
+	LatencySpikeFactor        float64            `json:"latency_spike_factor"`
+	Severities                []AnalysisSeverity `json:"severities,omitempty"`
+}
+
+// AnalysisSeverity is one explicit signature severity override.
+type AnalysisSeverity struct {
+	ID       string `json:"id"`
+	Severity string `json:"severity"`
+}
+
+// AnalysisTrials preserves the aggregate summary for the selected worst trial.
+type AnalysisTrials struct {
+	Total      int  `json:"total"`
+	Failed     int  `json:"failed"`
+	Consistent bool `json:"consistent"`
 }
 
 // Event is one observation. Offset is a monotonic duration from run start and

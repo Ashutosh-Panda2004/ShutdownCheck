@@ -1,6 +1,7 @@
 package timeline
 
 import (
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -144,6 +145,77 @@ func TestRecordLimitDropsRequestsButKeepsCriticalEvents(t *testing.T) {
 	}
 }
 
+func TestRecordLimitDoesNotCountCriticalEvents(t *testing.T) {
+	r := NewRecorder(testMeta(), 2)
+
+	// Lifecycle observations are load-bearing and do not consume the evidence
+	// budget, even when they arrive first.
+	r.Record(StageAt(time.Millisecond, StagePreflight))
+	r.Record(SignalAt(2*time.Millisecond, SignalEvent{Signal: "TERM"}))
+	r.Record(ProcessAt(3*time.Millisecond, ProcessEvent{Phase: ProcStarted}))
+
+	for i := range 3 {
+		r.Record(RequestAt(RequestEvent{
+			ID:      uint64(i),
+			Method:  "GET",
+			Sent:    time.Duration(i+4) * time.Millisecond,
+			Done:    time.Duration(i+5) * time.Millisecond,
+			Outcome: OutcomeOK,
+		}))
+	}
+
+	snap := r.Snapshot()
+	if got := len(snap.Requests()); got != 2 {
+		t.Errorf("retained %d requests, want the full request budget of 2", got)
+	}
+	if got := snap.Dropped; got != 1 {
+		t.Errorf("Dropped = %d, want 1", got)
+	}
+}
+
+func TestRecordLimitBoundsAnalysisEvidence(t *testing.T) {
+	for _, kind := range []Kind{KindRequest, KindConnection, KindReadiness, KindListener} {
+		t.Run(string(kind), func(t *testing.T) {
+			r := NewRecorder(testMeta(), 1)
+			count := 2
+			if kind != KindRequest {
+				count = auxiliaryMultiplier + 1
+			}
+			for range count {
+				switch kind {
+				case KindRequest:
+					r.Record(RequestAt(RequestEvent{Method: "GET", Outcome: OutcomeOK}))
+				case KindConnection:
+					r.Record(ConnectionAt(0, ConnectionEvent{Phase: ConnOpen}))
+				case KindReadiness:
+					r.Record(ReadinessAt(0, ReadinessEvent{}))
+				case KindListener:
+					r.Record(ListenerAt(0, ListenerEvent{}))
+				}
+			}
+
+			if got := r.Dropped(); got != 1 {
+				t.Fatalf("Dropped() = %d, want 1", got)
+			}
+		})
+	}
+}
+
+func TestLogEventsDoNotConsumeAnalysisEvidenceBudget(t *testing.T) {
+	r := NewRecorder(testMeta(), 1)
+	for range 10 {
+		r.Record(LogAt(0, "stdout", "line"))
+	}
+	r.Record(RequestAt(RequestEvent{Method: "GET", Outcome: OutcomeOK}))
+
+	if got := len(r.Snapshot().Requests()); got != 1 {
+		t.Fatalf("retained %d request records, want 1", got)
+	}
+	if got := r.Dropped(); got != 0 {
+		t.Fatalf("Dropped() = %d, want 0", got)
+	}
+}
+
 func TestSignalOffsetIgnoresSigkill(t *testing.T) {
 	r := NewRecorder(testMeta(), 0)
 	r.Record(SignalAt(5*time.Second, SignalEvent{Signal: "TERM"}))
@@ -281,6 +353,29 @@ func TestRecordAllPreservesOrder(t *testing.T) {
 	}
 }
 
+func TestRecorderNonPositiveLimitUsesSafeDefault(t *testing.T) {
+	for _, limit := range []int{0, -1} {
+		r := NewRecorder(testMeta(), limit)
+		if r.limit != DefaultRecordLimit {
+			t.Errorf("NewRecorder limit %d resolved to %d, want %d", limit, r.limit, DefaultRecordLimit)
+		}
+	}
+}
+
+func TestRecorderClampsExcessiveLimit(t *testing.T) {
+	r := NewRecorder(testMeta(), MaxRecordLimit+1)
+	if r.limit != MaxRecordLimit {
+		t.Errorf("NewRecorder resolved limit to %d, want maximum %d", r.limit, MaxRecordLimit)
+	}
+}
+
+func TestMaximumRecorderBudgetsFitNDJSONRecordLimit(t *testing.T) {
+	bounded := MaxRecordLimit * (1 + auxiliaryMultiplier)
+	if bounded >= MaxNDJSONRecords {
+		t.Fatalf("bounded live evidence can use %d records, leaving no room under the %d-record read limit", bounded, MaxNDJSONRecords)
+	}
+}
+
 func TestNDJSONRoundTrip(t *testing.T) {
 	exit := 0
 	r := NewRecorder(testMeta(), 0)
@@ -334,6 +429,80 @@ func TestNDJSONRoundTrip(t *testing.T) {
 	}
 }
 
+func TestNDJSONPreservesDroppedRequestCount(t *testing.T) {
+	r := NewRecorder(testMeta(), 1)
+	r.Record(RequestAt(RequestEvent{Method: "GET", Outcome: OutcomeOK}))
+	r.Record(RequestAt(RequestEvent{Method: "GET", Outcome: OutcomeOK}))
+
+	var buf strings.Builder
+	if err := WriteNDJSON(&buf, r.Snapshot()); err != nil {
+		t.Fatalf("WriteNDJSON: %v", err)
+	}
+
+	got, err := ReadNDJSON(strings.NewReader(buf.String()))
+	if err != nil {
+		t.Fatalf("ReadNDJSON: %v", err)
+	}
+	if got.Dropped != 1 {
+		t.Errorf("Dropped = %d, want 1", got.Dropped)
+	}
+}
+
+func TestNDJSONPreservesDroppedAuxiliaryCount(t *testing.T) {
+	r := NewRecorder(testMeta(), 1)
+	for range auxiliaryMultiplier + 1 {
+		r.Record(ConnectionAt(0, ConnectionEvent{Phase: ConnOpen}))
+	}
+
+	var buf strings.Builder
+	if err := WriteNDJSON(&buf, r.Snapshot()); err != nil {
+		t.Fatalf("WriteNDJSON: %v", err)
+	}
+	got, err := ReadNDJSON(strings.NewReader(buf.String()))
+	if err != nil {
+		t.Fatalf("ReadNDJSON: %v", err)
+	}
+	if got.Dropped != 0 || got.DroppedAuxiliary != 1 {
+		t.Errorf("dropped counts = %d/%d, want 0/1", got.Dropped, got.DroppedAuxiliary)
+	}
+}
+
+func TestNDJSONInputLimits(t *testing.T) {
+	valid := `{"kind":"stage","stage":{"stage":"warmup"}}`
+
+	t.Run("total bytes", func(t *testing.T) {
+		if _, err := readNDJSONWithLimits(strings.NewReader(valid), 8, 1024, 10); err == nil {
+			t.Fatal("oversized evidence was accepted")
+		}
+	})
+
+	t.Run("record bytes", func(t *testing.T) {
+		if _, err := readNDJSONWithLimits(strings.NewReader(valid), 1024, 8, 10); err == nil {
+			t.Fatal("oversized record was accepted")
+		}
+	})
+
+	t.Run("record count", func(t *testing.T) {
+		input := valid + "\n" + valid + "\n"
+		if _, err := readNDJSONWithLimits(strings.NewReader(input), 1024, 1024, 1); err == nil {
+			t.Fatal("too many records were accepted")
+		}
+	})
+
+	t.Run("exact byte limit without trailing newline", func(t *testing.T) {
+		if _, err := readNDJSONWithLimits(strings.NewReader(valid), len(valid), 1024, 10); err != nil {
+			t.Fatalf("input exactly at the byte limit was rejected: %v", err)
+		}
+	})
+
+	t.Run("CRLF bytes count toward the limit", func(t *testing.T) {
+		input := valid + "\r\n" + valid + "\r\n"
+		if _, err := readNDJSONWithLimits(strings.NewReader(input), len(input)-1, 1024, 10); err == nil {
+			t.Fatal("input larger than the byte limit was accepted because CRLF bytes were not counted")
+		}
+	})
+}
+
 func TestNDJSONRejectsMisplacedMeta(t *testing.T) {
 	input := `{"seq":1,"offset_ns":0,"kind":"stage","stage":{"stage":"warmup"}}
 {"seq":2,"offset_ns":0,"kind":"meta","meta":{"tool_version":"x","started_at":"2026-09-03T10:15:18Z","seed":0,"trial":1,"trials":1}}
@@ -350,6 +519,7 @@ func TestNDJSONRejectsPayloadKindMismatch(t *testing.T) {
 		"two payloads":      `{"seq":1,"offset_ns":0,"kind":"stage","stage":{"stage":"warmup"},"log":{"stream":"stdout","line":"x"}}`,
 		"unknown kind":      `{"seq":1,"offset_ns":0,"kind":"wat","stage":{"stage":"warmup"}}`,
 		"meta without meta": `{"seq":1,"offset_ns":0,"kind":"meta"}`,
+		"meta plus payload": `{"kind":"meta","meta":{"tool_version":"x"},"stage":{"stage":"warmup"}}`,
 	}
 
 	for name, input := range cases {
@@ -364,6 +534,46 @@ func TestNDJSONRejectsPayloadKindMismatch(t *testing.T) {
 func TestNDJSONRejectsMalformedJSON(t *testing.T) {
 	if _, err := ReadNDJSON(strings.NewReader("{not json}")); err == nil {
 		t.Fatal("expected an error for malformed JSON")
+	}
+}
+
+func TestNDJSONRejectsUnknownFields(t *testing.T) {
+	for name, input := range map[string]string{
+		"event":   `{"kind":"stage","unexpected":true,"stage":{"stage":"warmup"}}`,
+		"payload": `{"kind":"stage","stage":{"stage":"warmup","stgae":"signal"}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := ReadNDJSON(strings.NewReader(input)); err == nil {
+				t.Fatal("an unknown evidence field was silently ignored")
+			}
+		})
+	}
+}
+
+func TestNDJSONRejectsDuplicateFields(t *testing.T) {
+	input := `{"kind":"stage","kind":"request","stage":{"stage":"warmup"}}`
+	if _, err := ReadNDJSON(strings.NewReader(input)); err == nil {
+		t.Fatal("duplicate JSON fields were silently accepted")
+	}
+}
+
+func TestNDJSONRejectsImpossibleEventValues(t *testing.T) {
+	cases := map[string]string{
+		"negative offset":         `{"offset_ns":-1,"kind":"stage","stage":{"stage":"warmup"}}`,
+		"excessive offset":        fmt.Sprintf(`{"offset_ns":%d,"kind":"stage","stage":{"stage":"warmup"}}`, MaxEvidenceDuration+1),
+		"unknown stage":           `{"kind":"stage","stage":{"stage":"teleport"}}`,
+		"request before send":     `{"offset_ns":1,"kind":"request","request":{"method":"GET","sent_ns":2,"done_ns":1,"outcome":"ok"}}`,
+		"request offset mismatch": `{"offset_ns":2,"kind":"request","request":{"method":"GET","sent_ns":0,"done_ns":1,"outcome":"ok"}}`,
+		"unknown outcome":         `{"offset_ns":1,"kind":"request","request":{"method":"GET","sent_ns":0,"done_ns":1,"outcome":"perfect"}}`,
+		"negative dropped count":  `{"kind":"meta","meta":{"dropped":-1}}`,
+	}
+
+	for name, input := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := ReadNDJSON(strings.NewReader(input)); err == nil {
+				t.Fatal("semantically invalid evidence was accepted")
+			}
+		})
 	}
 }
 
