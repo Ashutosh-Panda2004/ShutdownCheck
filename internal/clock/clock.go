@@ -75,20 +75,25 @@ func NewFake(start time.Time) *Fake {
 	return &Fake{now: start}
 }
 
+// Now returns the fake clock's current instant.
 func (f *Fake) Now() time.Time {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.now
 }
 
+// Since returns the elapsed fake time since t.
 func (f *Fake) Since(t time.Time) time.Duration { return f.Now().Sub(t) }
 
+// Sleep blocks until fake time advances by d.
 func (f *Fake) Sleep(d time.Duration) { <-f.After(d) }
 
+// After returns a channel that fires after fake time advances by d.
 func (f *Fake) After(d time.Duration) <-chan time.Time {
 	return f.addWaiter(d, 0).ch
 }
 
+// NewTicker returns a ticker driven by manual fake-clock advancement.
 func (f *Fake) NewTicker(d time.Duration) Ticker {
 	if d <= 0 {
 		panic("clock: NewTicker requires a positive duration")
