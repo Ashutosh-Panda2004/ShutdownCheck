@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/shutdowncheck/shutdowncheck/internal/clock"
+	"github.com/shutdowncheck/shutdowncheck/internal/redact"
 )
 
 // Readiness polling defaults.
@@ -45,10 +46,12 @@ func (e *ErrReadyTimeout) Error() string {
 	where := e.Check.URL
 	if where == "" {
 		where = e.Check.Addr
+	} else {
+		where = redact.URL(where)
 	}
 	msg := fmt.Sprintf("target did not become ready at %s within %s", where, e.Waited)
 	if e.LastErr != nil {
-		msg += ": " + e.LastErr.Error()
+		msg += ": " + redact.Message(e.LastErr.Error())
 	}
 	return msg
 }
@@ -86,7 +89,7 @@ func WaitReady(ctx context.Context, check ReadyCheck, clk clock.Clock, alive fun
 		timeout = DefaultReadyTimeout
 	}
 
-	probe := newReadyProbe(check, interval)
+	probe := newReadyProbe(check, interval, timeout)
 	defer probe.close()
 
 	start := clk.Now()
@@ -100,7 +103,10 @@ func WaitReady(ctx context.Context, check ReadyCheck, clk clock.Clock, alive fun
 
 		if alive != nil {
 			running, err := alive()
-			if err == nil && !running {
+			if err != nil {
+				return fmt.Errorf("observe target during startup: %w", err)
+			}
+			if !running {
 				return &ErrDiedDuringStartup{}
 			}
 		}
@@ -123,8 +129,11 @@ type readyProbe struct {
 	dialer *net.Dialer
 }
 
-func newReadyProbe(check ReadyCheck, interval time.Duration) *readyProbe {
+func newReadyProbe(check ReadyCheck, interval, overallTimeout time.Duration) *readyProbe {
 	dialTimeout := max(interval*4, time.Second)
+	if overallTimeout > 0 && dialTimeout > overallTimeout {
+		dialTimeout = overallTimeout
+	}
 
 	return &readyProbe{
 		check:  check,

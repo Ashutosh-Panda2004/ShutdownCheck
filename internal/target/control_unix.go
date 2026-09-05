@@ -3,6 +3,7 @@
 package target
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -56,12 +57,15 @@ func signalName(s syscall.Signal) Signal {
 // would leave workers holding the port after the run, which is the very defect
 // SC012 exists to catch.
 type commandControl struct {
-	cmd    *exec.Cmd
-	pgid   int
-	done   chan struct{}
-	status ExitStatus
-	waitMu sync.Mutex
-	waited bool
+	cmd           *exec.Cmd
+	pgid          int
+	done          chan struct{}
+	stdout        io.Writer
+	stderr        io.Writer
+	status        ExitStatus
+	waitMu        sync.Mutex
+	waited        bool
+	groupSurvived bool
 }
 
 func newCommandControl(opts CommandOptions, stdout, stderr io.Writer) (processControl, error) {
@@ -73,7 +77,7 @@ func newCommandControl(opts CommandOptions, stdout, stderr io.Writer) (processCo
 	cmd.Stderr = stderr
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
-	return &commandControl{cmd: cmd, done: make(chan struct{})}, nil
+	return &commandControl{cmd: cmd, done: make(chan struct{}), stdout: stdout, stderr: stderr}, nil
 }
 
 func (c *commandControl) Start() error {
@@ -84,10 +88,14 @@ func (c *commandControl) Start() error {
 
 	go func() {
 		err := c.cmd.Wait()
+		flushLogWriter(c.stdout)
+		flushLogWriter(c.stderr)
+		groupErr := syscall.Kill(-c.pgid, 0)
 
 		c.waitMu.Lock()
 		c.status = exitStatusFrom(c.cmd.ProcessState, err)
 		c.waited = true
+		c.groupSurvived = groupErr == nil || errors.Is(groupErr, syscall.EPERM)
 		c.waitMu.Unlock()
 
 		close(c.done)
@@ -130,8 +138,12 @@ func (c *commandControl) Alive() (bool, error) {
 	}
 }
 
-func (c *commandControl) Wait() (ExitStatus, error) {
-	<-c.done
+func (c *commandControl) Wait(ctx context.Context) (ExitStatus, error) {
+	select {
+	case <-c.done:
+	case <-ctx.Done():
+		return ExitStatus{}, ctx.Err()
+	}
 
 	c.waitMu.Lock()
 	defer c.waitMu.Unlock()
@@ -145,10 +157,18 @@ func (c *commandControl) Cleanup() error {
 
 	select {
 	case <-c.done:
-		return nil
+		c.waitMu.Lock()
+		groupSurvived := c.groupSurvived
+		c.waitMu.Unlock()
+		if !groupSurvived {
+			return nil
+		}
 	default:
 	}
 
+	// The parent may already have exited while a worker in its process group is
+	// still serving. Always signal the owned group; returning just because Wait
+	// completed would leak exactly the orphan topology SC012 detects.
 	if err := syscall.Kill(-c.pgid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
 		return fmt.Errorf("kill process group %d: %w", c.pgid, err)
 	}
@@ -223,7 +243,10 @@ func (a *attachControl) Alive() (bool, error) {
 // Wait polls, because a process that is not our child cannot be waited on.
 // The exit status is therefore unknown, and is reported as such rather than
 // being invented.
-func (a *attachControl) Wait() (ExitStatus, error) {
+
+func (a *attachControl) Wait(ctx context.Context) (ExitStatus, error) {
+	ticker := time.NewTicker(attachPollInterval)
+	defer ticker.Stop()
 	for {
 		alive, err := a.Alive()
 		if err != nil {
@@ -232,7 +255,11 @@ func (a *attachControl) Wait() (ExitStatus, error) {
 		if !alive {
 			return ExitStatus{Known: false}, nil
 		}
-		time.Sleep(attachPollInterval)
+		select {
+		case <-ticker.C:
+		case <-ctx.Done():
+			return ExitStatus{}, ctx.Err()
+		}
 	}
 }
 

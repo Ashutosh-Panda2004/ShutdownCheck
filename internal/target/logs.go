@@ -13,6 +13,7 @@ import (
 const (
 	DefaultMaxLogBytes = 1 << 20
 	maxLogLineBytes    = 8 << 10
+	maxLogLines        = 10_000
 )
 
 // lineWriter turns a byte stream into redacted lines pushed to a sink.
@@ -29,6 +30,7 @@ type lineWriter struct {
 	mu     sync.Mutex
 	buf    []byte
 	total  int64
+	lines  int
 	capped bool
 }
 
@@ -77,6 +79,12 @@ func (w *lineWriter) Flush() {
 	w.emitLocked()
 }
 
+func flushLogWriter(w io.Writer) {
+	if flusher, ok := w.(interface{ Flush() }); ok {
+		flusher.Flush()
+	}
+}
+
 func (w *lineWriter) emitLocked() {
 	if len(w.buf) == 0 {
 		return
@@ -84,14 +92,17 @@ func (w *lineWriter) emitLocked() {
 	line := string(w.buf)
 	w.buf = w.buf[:0]
 
-	if w.total >= w.max {
+	size := int64(len(line) + 1)
+	if w.total+size > w.max || w.lines >= maxLogLines {
 		if !w.capped {
 			w.capped = true
-			w.sink(w.stream, fmt.Sprintf("[shutdowncheck] log capture truncated after %d bytes", w.max))
+			w.sink(w.stream, fmt.Sprintf(
+				"[shutdowncheck] log capture truncated after %d bytes or %d lines", w.max, maxLogLines))
 		}
 		return
 	}
 
-	w.total += int64(len(line))
+	w.total += size
+	w.lines++
 	w.sink(w.stream, redact.Message(line))
 }

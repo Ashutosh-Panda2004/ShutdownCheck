@@ -25,7 +25,7 @@ type processControl interface {
 	PID() int
 	SignalPID(sig Signal) error
 	Alive() (bool, error)
-	Wait() (ExitStatus, error)
+	Wait(ctx context.Context) (ExitStatus, error)
 	Cleanup() error
 }
 
@@ -181,23 +181,7 @@ func (t *processTarget) Signal(sig Signal) error {
 func (t *processTarget) Alive() (bool, error) { return t.control.Alive() }
 
 func (t *processTarget) Wait(ctx context.Context) (ExitStatus, error) {
-	type result struct {
-		status ExitStatus
-		err    error
-	}
-
-	done := make(chan result, 1)
-	go func() {
-		status, err := t.control.Wait()
-		done <- result{status, err}
-	}()
-
-	select {
-	case r := <-done:
-		return r.status, r.err
-	case <-ctx.Done():
-		return ExitStatus{}, ctx.Err()
-	}
+	return t.control.Wait(ctx)
 }
 
 func (t *processTarget) DefaultGracePeriod() time.Duration {

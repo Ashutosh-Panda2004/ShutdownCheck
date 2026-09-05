@@ -79,7 +79,7 @@ func (f *fakeControl) Alive() (bool, error) {
 	return f.alive, nil
 }
 
-func (f *fakeControl) Wait() (ExitStatus, error) {
+func (f *fakeControl) Wait(ctx context.Context) (ExitStatus, error) {
 	for {
 		alive, err := f.Alive()
 		if err != nil {
@@ -90,7 +90,11 @@ func (f *fakeControl) Wait() (ExitStatus, error) {
 			defer f.mu.Unlock()
 			return f.status, nil
 		}
-		time.Sleep(2 * time.Millisecond)
+		select {
+		case <-time.After(2 * time.Millisecond):
+		case <-ctx.Done():
+			return ExitStatus{}, ctx.Err()
+		}
 	}
 }
 

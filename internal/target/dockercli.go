@@ -10,11 +10,18 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/shutdowncheck/shutdowncheck/internal/redact"
 )
 
 // dockerBinary is the CLI this package drives. It is never passed to a shell
 // and no argument is ever interpolated into a command string.
 const dockerBinary = "docker"
+
+const (
+	maxDockerOutputBytes = 8 << 20
+	maxDockerErrorBytes  = 64 << 10
+)
 
 // dockerCLI talks to the daemon by executing the docker binary.
 //
@@ -69,6 +76,9 @@ func (dockerCLI) Inspect(ctx context.Context, container string) (ContainerState,
 		return ContainerState{}, fmt.Errorf("%w: %s", ErrContainerNotRunning, container)
 	}
 	p := payloads[0]
+	if !ValidContainerID(p.ID) {
+		return ContainerState{}, fmt.Errorf("parsing docker inspect output: invalid container ID")
+	}
 
 	ports := map[string][]PortBinding{}
 	for port, bindings := range p.NetworkSettings.Ports {
@@ -116,8 +126,10 @@ func (dockerCLI) FollowLogs(ctx context.Context, container string, sink LogSink,
 	// worse than having none.
 	cmd := exec.CommandContext(streamCtx, dockerBinary, // #nosec G204 -- fixed binary, validated container ref
 		"logs", "--follow", "--tail", "0", "--", container)
-	cmd.Stdout = NewLogWriter("stdout", maxBytes, sink)
-	cmd.Stderr = NewLogWriter("stderr", maxBytes, sink)
+	stdout := NewLogWriter("stdout", maxBytes, sink)
+	stderr := NewLogWriter("stderr", maxBytes, sink)
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 
 	if err := cmd.Start(); err != nil {
 		cancel()
@@ -128,6 +140,8 @@ func (dockerCLI) FollowLogs(ctx context.Context, container string, sink LogSink,
 	go func() {
 		defer close(done)
 		_ = cmd.Wait()
+		flushLogWriter(stdout)
+		flushLogWriter(stderr)
 	}()
 
 	var once sync.Once
@@ -141,17 +155,48 @@ func (dockerCLI) FollowLogs(ctx context.Context, container string, sink LogSink,
 }
 
 func runDocker(ctx context.Context, args ...string) ([]byte, error) {
-	var stdout, stderr bytes.Buffer
+	stdout := newCappedBuffer(maxDockerOutputBytes)
+	stderr := newCappedBuffer(maxDockerErrorBytes)
 
 	cmd := exec.CommandContext(ctx, dockerBinary, args...) // #nosec G204 -- fixed binary, validated container ref
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 
 	if err := cmd.Run(); err != nil {
 		return nil, dockerError(args[0], err, stderr.Bytes())
 	}
+	if stdout.Truncated() {
+		return nil, fmt.Errorf("docker %s output exceeded the %d-byte limit", args[0], maxDockerOutputBytes)
+	}
 	return stdout.Bytes(), nil
 }
+
+type cappedBuffer struct {
+	bytes.Buffer
+	max       int
+	truncated bool
+}
+
+func newCappedBuffer(maxBytes int) *cappedBuffer {
+	return &cappedBuffer{max: maxBytes}
+}
+
+func (b *cappedBuffer) Write(p []byte) (int, error) {
+	written := len(p)
+	remaining := b.max - b.Len()
+	if remaining <= 0 {
+		b.truncated = b.truncated || written > 0
+		return written, nil
+	}
+	if len(p) > remaining {
+		p = p[:remaining]
+		b.truncated = true
+	}
+	_, _ = b.Buffer.Write(p)
+	return written, nil
+}
+
+func (b *cappedBuffer) Truncated() bool { return b.truncated }
 
 // dockerError turns an exec failure into something a user can act on.
 //
@@ -168,6 +213,7 @@ func dockerError(subcommand string, err error, stderr []byte) error {
 	if detail == "" {
 		detail = err.Error()
 	}
+	detail = redact.Message(detail)
 
 	if isDaemonUnreachable(detail) {
 		return fmt.Errorf("%w: %s", ErrDockerUnavailable, detail)

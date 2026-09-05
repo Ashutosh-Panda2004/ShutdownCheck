@@ -12,6 +12,8 @@ import (
 // Signal is a portable termination signal name.
 type Signal string
 
+// SIGTERM and the other signal constants are the portable signals understood
+// by shutdowncheck.
 const (
 	SIGTERM Signal = "TERM"
 	SIGINT  Signal = "INT"

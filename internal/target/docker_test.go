@@ -25,11 +25,15 @@ type fakeDocker struct {
 	waitErr    error
 	logsErr    error
 
-	state     ContainerState
-	waitCode  int
-	killed    []Signal
-	logsStops int
-	inspects  int
+	state      ContainerState
+	waitCode   int
+	killed     []Signal
+	logsStops  int
+	inspects   int
+	inspectRef string
+	killRef    string
+	waitRef    string
+	logsRef    string
 
 	// holdExit keeps the container notionally running until it is closed, so
 	// the transition from alive to exited can be observed deliberately.
@@ -42,30 +46,33 @@ func (f *fakeDocker) Ping(context.Context) error {
 	return f.pingErr
 }
 
-func (f *fakeDocker) Inspect(context.Context, string) (ContainerState, error) {
+func (f *fakeDocker) Inspect(_ context.Context, container string) (ContainerState, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
 	f.inspects++
+	f.inspectRef = container
 	if f.inspectErr != nil {
 		return ContainerState{}, f.inspectErr
 	}
 	return f.state, nil
 }
 
-func (f *fakeDocker) Kill(_ context.Context, _ string, sig Signal) error {
+func (f *fakeDocker) Kill(_ context.Context, container string, sig Signal) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
 	if f.killErr != nil {
 		return f.killErr
 	}
+	f.killRef = container
 	f.killed = append(f.killed, sig)
 	return nil
 }
 
-func (f *fakeDocker) Wait(ctx context.Context, _ string) (int, error) {
+func (f *fakeDocker) Wait(ctx context.Context, container string) (int, error) {
 	f.mu.Lock()
+	f.waitRef = container
 	hold := f.holdExit
 	err := f.waitErr
 	code := f.waitCode
@@ -84,13 +91,14 @@ func (f *fakeDocker) Wait(ctx context.Context, _ string) (int, error) {
 	return code, nil
 }
 
-func (f *fakeDocker) FollowLogs(context.Context, string, LogSink, int64) (func() error, error) {
+func (f *fakeDocker) FollowLogs(_ context.Context, container string, _ LogSink, _ int64) (func() error, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
 	if f.logsErr != nil {
 		return nil, f.logsErr
 	}
+	f.logsRef = container
 	return func() error {
 		f.mu.Lock()
 		defer f.mu.Unlock()
@@ -107,11 +115,59 @@ func (f *fakeDocker) signalsSent() []Signal {
 
 func runningContainer() ContainerState {
 	return ContainerState{
-		ID: "abc123", Name: "api", Image: "api:latest",
+		ID: strings.Repeat("a", 64), Name: "api", Image: "api:latest",
 		Running: true, PID: 4242,
 		Ports: map[string][]PortBinding{
 			"8080/tcp": {{HostIP: "0.0.0.0", HostPort: "32768"}},
 		},
+	}
+}
+
+func TestDockerPinsOperationsToInspectedContainerID(t *testing.T) {
+	hold := make(chan struct{})
+	client := &fakeDocker{state: runningContainer(), holdExit: hold}
+	tgt := newFakeDockerTarget(t, client, DockerOptions{LogSink: func(string, string) {}})
+
+	if err := tgt.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if err := tgt.Signal(SIGTERM); err != nil {
+		t.Fatalf("Signal: %v", err)
+	}
+	if err := tgt.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	want := client.state.ID
+	if client.inspectRef != "api" {
+		t.Errorf("initial inspect used %q, want original name api", client.inspectRef)
+	}
+	for operation, got := range map[string]string{
+		"kill": client.killRef, "wait": client.waitRef, "logs": client.logsRef,
+	} {
+		if got != want {
+			t.Errorf("%s used %q, want immutable ID %q", operation, got, want)
+		}
+	}
+}
+
+func TestDockerCloseJoinsExitWatcher(t *testing.T) {
+	client := &fakeDocker{state: runningContainer(), holdExit: make(chan struct{})}
+	targetInterface := newFakeDockerTarget(t, client, DockerOptions{})
+	tgt := targetInterface.(*dockerTarget)
+
+	if err := tgt.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if err := tgt.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	select {
+	case <-tgt.exited:
+	default:
+		t.Fatal("Close returned before the exit watcher stopped")
 	}
 }
 
@@ -205,6 +261,33 @@ func TestDockerUnavailableDaemonIsDistinctFromADefect(t *testing.T) {
 	err := tgt.Start(context.Background())
 	if !errors.Is(err, ErrDockerUnavailable) {
 		t.Fatalf("err = %v, want ErrDockerUnavailable", err)
+	}
+}
+
+func TestDockerErrorsDoNotLeakCredentials(t *testing.T) {
+	const secret = "docker-secret-must-not-appear"
+	err := dockerError("inspect", errors.New("exit status 1"), []byte(
+		`cannot connect to "https://user:`+secret+`@docker.internal/?token=`+secret+`"`,
+	))
+
+	if strings.Contains(err.Error(), secret) {
+		t.Fatalf("docker error leaked credentials: %v", err)
+	}
+}
+
+func TestDockerOutputBufferIsBounded(t *testing.T) {
+	buffer := newCappedBuffer(4)
+	payload := []byte("123456")
+
+	n, err := buffer.Write(payload)
+	if err != nil || n != len(payload) {
+		t.Fatalf("Write = %d, %v; want %d, nil", n, err, len(payload))
+	}
+	if got := buffer.String(); got != "1234" {
+		t.Errorf("retained output = %q, want %q", got, "1234")
+	}
+	if !buffer.Truncated() {
+		t.Error("buffer did not report truncation")
 	}
 }
 
@@ -315,7 +398,7 @@ func TestDockerOOMKillReachesTheTimeline(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	joined := strings.Join(lines, "\n")
-	if !strings.Contains(joined, "OOM-killed") {
+	if !strings.Contains(joined, "stderr: [shutdowncheck] container was OOM-killed") {
 		t.Errorf("the OOM kill was not surfaced: %q", joined)
 	}
 }
@@ -484,6 +567,24 @@ func TestResolveContainerPort(t *testing.T) {
 		},
 		"unpublished port requested": {
 			state: ContainerState{Name: "api", Ports: multi}, port: "7000", wantErr: true,
+		},
+		"udp port is not an HTTP target": {
+			state: ContainerState{Name: "api", Ports: map[string][]PortBinding{
+				"5353/udp": {{HostIP: "0.0.0.0", HostPort: "5353"}},
+			}}, wantErr: true,
+		},
+		"invalid explicit port": {
+			state: ContainerState{Name: "api", Ports: multi}, port: "not-a-port", wantErr: true,
+		},
+		"invalid host binding": {
+			state: ContainerState{Name: "api", Ports: map[string][]PortBinding{
+				"8080/tcp": {{HostIP: "not an ip", HostPort: "1234"}},
+			}}, wantErr: true,
+		},
+		"invalid host port": {
+			state: ContainerState{Name: "api", Ports: map[string][]PortBinding{
+				"8080/tcp": {{HostIP: "127.0.0.1", HostPort: "70000"}},
+			}}, wantErr: true,
 		},
 		"wildcard bind becomes loopback": {
 			state: ContainerState{Name: "api", Ports: map[string][]PortBinding{

@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -21,6 +23,7 @@ import (
 // with "-" would be parsed by the docker CLI as a flag. Docker's own naming
 // rules are a subset of this, so nothing legitimate is rejected.
 var containerRef = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$`)
+var containerID = regexp.MustCompile(`^[a-f0-9]{64}$`)
 
 // ValidContainerRef reports whether a container reference is safe to pass to
 // the docker CLI.
@@ -30,6 +33,15 @@ var containerRef = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$`)
 // next to the code that builds the argv, because a second copy elsewhere is a
 // second copy that can drift.
 func ValidContainerRef(s string) bool { return containerRef.MatchString(s) }
+
+// ValidContainerID reports whether id is a full immutable Docker container ID.
+func ValidContainerID(id string) bool { return containerID.MatchString(id) }
+
+// ValidContainerPort reports whether value names a TCP container port.
+func ValidContainerPort(value string) bool {
+	_, err := normalizeContainerPort(value)
+	return err == nil
+}
 
 // Errors that mean the tool could not run, as distinct from a defect it found.
 var (
@@ -180,7 +192,7 @@ func (t *dockerTarget) Start(ctx context.Context) error {
 	t.mu.Unlock()
 
 	if err := t.client.Ping(ctx); err != nil {
-		return fmt.Errorf("%w: %v", ErrDockerUnavailable, err)
+		return fmt.Errorf("%w: %w", ErrDockerUnavailable, err)
 	}
 
 	state, err := t.client.Inspect(ctx, t.name)
@@ -190,11 +202,18 @@ func (t *dockerTarget) Start(ctx context.Context) error {
 	if !state.Running {
 		return fmt.Errorf("%w: %s", ErrContainerNotRunning, t.name)
 	}
+	if !ValidContainerID(state.ID) {
+		return fmt.Errorf("docker inspect returned an invalid container ID")
+	}
 
 	t.mu.Lock()
 	// The container's PID is only meaningful when the daemon shares a namespace
 	// with us, so it is reported for context and never signalled.
 	t.pid = state.PID
+	// Every operation after this point uses the immutable ID. A mutable name can
+	// be removed and reused while a run is in progress, which could otherwise
+	// cause the tool to signal a different container than the one it inspected.
+	t.name = state.ID
 	t.mu.Unlock()
 
 	t.watchExit()
@@ -313,7 +332,7 @@ func (t *dockerTarget) finish(ctx context.Context, code int) ExitStatus {
 	// drain from the outside, so the distinction goes on the timeline.
 	if t.sink != nil {
 		if state, err := t.client.Inspect(ctx, t.name); err == nil && state.OOMKilled {
-			t.sink("docker", "container was OOM-killed")
+			t.sink("stderr", "[shutdowncheck] container was OOM-killed")
 		}
 	}
 	return exitStatusFromCode(code)
@@ -373,7 +392,15 @@ func (t *dockerTarget) Close() error {
 			cancel()
 		}
 		if stop != nil {
-			t.closeErr = stop()
+			t.closeErr = errors.Join(t.closeErr, stop())
+		}
+		if cancel != nil {
+			select {
+			case <-t.exited:
+			case <-time.After(dockerControlTimeout):
+				t.closeErr = errors.Join(t.closeErr,
+					fmt.Errorf("docker exit watcher did not stop within %s", dockerControlTimeout))
+			}
 		}
 	})
 	return t.closeErr
@@ -389,7 +416,7 @@ func InspectContainer(ctx context.Context, container string) (ContainerState, er
 
 	client := newDockerCLI()
 	if err := client.Ping(ctx); err != nil {
-		return ContainerState{}, fmt.Errorf("%w: %v", ErrDockerUnavailable, err)
+		return ContainerState{}, fmt.Errorf("%w: %w", ErrDockerUnavailable, err)
 	}
 	return client.Inspect(ctx, name)
 }
@@ -406,20 +433,20 @@ func ResolveContainerPort(state ContainerState, containerPort string) (string, e
 	}
 
 	if containerPort != "" {
-		key := containerPort
-		if !strings.Contains(key, "/") {
-			key += "/tcp"
+		key, err := normalizeContainerPort(containerPort)
+		if err != nil {
+			return "", err
 		}
 		bindings, ok := state.Ports[key]
 		if !ok || len(bindings) == 0 {
 			return "", fmt.Errorf("%w: %s does not publish %s", ErrNoPublishedPort, state.Name, key)
 		}
-		return hostAddress(bindings[0]), nil
+		return hostAddress(bindings[0])
 	}
 
 	published := make([]string, 0, len(state.Ports))
 	for port, bindings := range state.Ports {
-		if len(bindings) > 0 {
+		if strings.HasSuffix(port, "/tcp") && len(bindings) > 0 {
 			published = append(published, port)
 		}
 	}
@@ -427,7 +454,7 @@ func ResolveContainerPort(state ContainerState, containerPort string) (string, e
 	case 0:
 		return "", fmt.Errorf("%w: %s", ErrNoPublishedPort, state.Name)
 	case 1:
-		return hostAddress(state.Ports[published[0]][0]), nil
+		return hostAddress(state.Ports[published[0]][0])
 	default:
 		slices.Sort(published)
 		return "", fmt.Errorf("%s publishes %s; pass --container-port to choose one",
@@ -435,15 +462,34 @@ func ResolveContainerPort(state ContainerState, containerPort string) (string, e
 	}
 }
 
+func normalizeContainerPort(value string) (string, error) {
+	port := value
+	if before, protocol, found := strings.Cut(value, "/"); found {
+		if protocol != "tcp" {
+			return "", fmt.Errorf("container port %q must use tcp", value)
+		}
+		port = before
+	}
+	number, err := strconv.Atoi(port)
+	if err != nil || number < 1 || number > 65535 {
+		return "", fmt.Errorf("container port %q must be between 1 and 65535", value)
+	}
+	return strconv.Itoa(number) + "/tcp", nil
+}
+
 // hostAddress turns a binding into something dialable. The daemon reports
 // wildcard binds as 0.0.0.0 or ::, neither of which is a usable destination.
-func hostAddress(b PortBinding) string {
+func hostAddress(b PortBinding) (string, error) {
 	host := b.HostIP
 	if host == "" || host == "0.0.0.0" || host == "::" {
 		host = "127.0.0.1"
 	}
-	if strings.Contains(host, ":") {
-		host = "[" + host + "]"
+	if net.ParseIP(host) == nil {
+		return "", fmt.Errorf("docker reported invalid host IP %q", host)
 	}
-	return host + ":" + b.HostPort
+	port, err := strconv.Atoi(b.HostPort)
+	if err != nil || port < 1 || port > 65535 {
+		return "", fmt.Errorf("docker reported invalid host port %q", b.HostPort)
+	}
+	return net.JoinHostPort(host, strconv.Itoa(port)), nil
 }

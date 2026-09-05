@@ -222,6 +222,28 @@ func TestWaitReadyTimesOut(t *testing.T) {
 	}
 }
 
+func TestReadyAttemptTimeoutDoesNotExceedOverallBudget(t *testing.T) {
+	probe := newReadyProbe(ReadyCheck{Addr: "127.0.0.1:1"}, 10*time.Millisecond, 120*time.Millisecond)
+	defer probe.close()
+
+	if probe.dialer.Timeout != 120*time.Millisecond || probe.client.Timeout != 120*time.Millisecond {
+		t.Fatalf("attempt timeouts = %s/%s, want 120ms", probe.dialer.Timeout, probe.client.Timeout)
+	}
+}
+
+func TestReadyTimeoutDoesNotLeakURLCredentials(t *testing.T) {
+	const secret = "ready-secret-must-not-appear"
+	err := (&ErrReadyTimeout{
+		Check:   ReadyCheck{URL: "https://user:" + secret + "@example.test/ready?token=" + secret},
+		Waited:  time.Second,
+		LastErr: errors.New("Get https://example.test/ready?api_key=" + secret + ": refused"),
+	}).Error()
+
+	if strings.Contains(err, secret) {
+		t.Fatalf("readiness error leaked credentials: %s", err)
+	}
+}
+
 // A target that crashes on boot must fail immediately with the reason, not burn
 // the whole timeout and then report a misleading "not ready".
 func TestWaitReadyFailsFastWhenTargetDies(t *testing.T) {
@@ -240,6 +262,21 @@ func TestWaitReadyFailsFastWhenTargetDies(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > 2*time.Second {
 		t.Errorf("took %v to notice the target had died; it should fail fast", elapsed)
+	}
+}
+
+func TestWaitReadyPropagatesLivenessErrors(t *testing.T) {
+	testutil.NoLeaks(t)
+
+	want := errors.New("liveness unavailable")
+	err := WaitReady(context.Background(), ReadyCheck{
+		Addr:     "127.0.0.1:1",
+		Timeout:  10 * time.Second,
+		Interval: 10 * time.Millisecond,
+	}, clock.System(), func() (bool, error) { return false, want })
+
+	if !errors.Is(err, want) {
+		t.Fatalf("error = %v, want wrapped liveness error", err)
 	}
 }
 
@@ -369,6 +406,23 @@ func TestLogWriterCapsLineLength(t *testing.T) {
 	}
 	if !strings.Contains(got[0], "line truncated") {
 		t.Error("truncation should be marked in the line")
+	}
+}
+
+func TestLogWriterCapsLineCount(t *testing.T) {
+	c := &captured{}
+	w := NewLogWriter("stdout", int64(maxLogLines*4), c.sink)
+
+	for range maxLogLines + 10 {
+		_, _ = w.Write([]byte("x\n"))
+	}
+
+	got := c.all()
+	if len(got) != maxLogLines+1 {
+		t.Fatalf("captured %d lines, want %d data lines plus one notice", len(got), maxLogLines)
+	}
+	if !strings.Contains(got[len(got)-1], "log capture truncated") {
+		t.Fatalf("final line is not a truncation notice: %q", got[len(got)-1])
 	}
 }
 

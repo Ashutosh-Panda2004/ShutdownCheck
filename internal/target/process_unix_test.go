@@ -5,7 +5,11 @@ package target
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -166,6 +170,42 @@ func TestCommandTargetCloseKillsSurvivors(t *testing.T) {
 	}
 }
 
+func TestCommandTargetCloseKillsOrphanAfterParentExited(t *testing.T) {
+	pidFile := filepath.Join(t.TempDir(), "child.pid")
+	command := fmt.Sprintf(`sleep 60 & echo $! > %q`, pidFile)
+	tgt := newSleepTarget(t, []string{"sh", "-c", command}, nil)
+
+	if err := tgt.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := tgt.Wait(ctx); err != nil {
+		t.Fatalf("Wait for parent: %v", err)
+	}
+
+	data, err := os.ReadFile(pidFile)
+	if err != nil {
+		t.Fatalf("read child PID: %v", err)
+	}
+	childPID, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		t.Fatalf("parse child PID: %v", err)
+	}
+	if err := tgt.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if err := syscall.Kill(childPID, 0); errors.Is(err, syscall.ESRCH) {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("orphaned child survived Close after its parent exited")
+}
+
 func TestCommandTargetCapturesLogs(t *testing.T) {
 	c := &captured{}
 	tgt := newSleepTarget(t, []string{"sh", "-c", `echo to-stdout; echo to-stderr 1>&2`}, c.sink)
@@ -187,6 +227,24 @@ func TestCommandTargetCapturesLogs(t *testing.T) {
 	}
 	if !sawOut || !sawErr {
 		t.Fatalf("captured %v, want both streams", c.all())
+	}
+}
+
+func TestCommandTargetFlushesFinalPartialLogLine(t *testing.T) {
+	c := &captured{}
+	tgt := newSleepTarget(t, []string{"sh", "-c", `printf final-line`}, c.sink)
+
+	if err := tgt.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := tgt.Wait(ctx); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+
+	if got := strings.Join(c.all(), "\n"); !strings.Contains(got, "stdout: final-line") {
+		t.Fatalf("captured %q, want final partial line", got)
 	}
 }
 
