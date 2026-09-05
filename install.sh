@@ -4,8 +4,9 @@
 #   curl -fsSL https://raw.githubusercontent.com/shutdowncheck/shutdowncheck/main/install.sh | sh
 #
 # Piping a script from the internet into a shell is a bad habit, so this one
-# earns it: it downloads over TLS, verifies the SHA-256 against the signed
-# checksums file, and refuses to install anything that does not match. Read it
+# earns it: it downloads over TLS, verifies the SHA-256 against the published
+# checksums file, and refuses to install anything that does not match. Releases
+# also publish a cosign signature for manual provenance verification. Read this
 # first — that is the point of it being short.
 #
 # POSIX sh on purpose: this has to run in a distroless-adjacent CI image with
@@ -26,6 +27,13 @@ die() { printf 'install: %s\n' "$*" >&2; exit 1; }
 
 need() {
     command -v "$1" >/dev/null 2>&1 || die "$1 is required but not installed"
+}
+
+validate_version() {
+    printf '%s\n' "$1" | awk '
+        /^v?[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?(\+[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$/ { valid = 1 }
+        END { exit !valid }
+    ' || die "invalid version '$1'; expected a release tag such as v1.2.3 or v1.2.3-rc.1"
 }
 
 detect_os() {
@@ -51,6 +59,7 @@ detect_arch() {
 
 resolve_version() {
     if [ "$VERSION" != "latest" ]; then
+		validate_version "$VERSION"
         printf '%s' "$VERSION"
         return
     fi
@@ -61,6 +70,7 @@ resolve_version() {
         "https://github.com/$REPO/releases/latest" | sed 's#.*/tag/##')
 
     [ -n "$resolved" ] || die "could not determine the latest version; set SHUTDOWNCHECK_VERSION"
+	validate_version "$resolved"
     printf '%s' "$resolved"
 }
 
@@ -80,16 +90,23 @@ verify_checksum() {
     archive="$1"
     checksums="$2"
 
+    name=$(basename "$archive")
+    expected=$(awk -v file="$name" '
+        $2 == file || $2 == "*" file {
+            if (found) exit 2
+            print $1
+            found = 1
+        }
+        END { if (!found) exit 1 }
+    ' "$checksums") || return 1
+
     if command -v sha256sum >/dev/null 2>&1; then
-        # --ignore-missing so the file listing every platform's artefact does
-        # not fail on the ones we did not download.
-        sha256sum --check --ignore-missing "$checksums" >/dev/null 2>&1 && return 0
-        return 1
+        actual=$(sha256sum "$archive" | awk '{print $1}')
+        [ "$expected" = "$actual" ]
+        return $?
     fi
 
     if command -v shasum >/dev/null 2>&1; then
-        expected=$(grep " $(basename "$archive")\$" "$checksums" | awk '{print $1}')
-        [ -n "$expected" ] || return 1
         actual=$(shasum -a 256 "$archive" | awk '{print $1}')
         [ "$expected" = "$actual" ]
         return $?
@@ -101,6 +118,8 @@ verify_checksum() {
 main() {
     need curl
     need tar
+    need awk
+    need mktemp
 
     os=$(detect_os)
     arch=$(detect_arch)
@@ -127,11 +146,15 @@ main() {
     tar -xzf "$tmp/$archive" -C "$tmp" shutdowncheck \
         || die "could not extract shutdowncheck from $archive"
 
+    [ -f "$tmp/shutdowncheck" ] && [ ! -L "$tmp/shutdowncheck" ] \
+        || die "archive did not contain a regular shutdowncheck binary"
+
     mkdir -p "$bin_dir"
     # Written under a temporary name and renamed, so a running binary is never
     # replaced underneath itself. cp rather than install(1), which is not
     # present on every minimal image.
-    staged="$bin_dir/.shutdowncheck.$$"
+    staged=$(mktemp "$bin_dir/.shutdowncheck.XXXXXX") \
+        || die "cannot create a staging file in $bin_dir"
     cp "$tmp/shutdowncheck" "$staged" 2>/dev/null \
         || die "cannot write to $bin_dir; set SHUTDOWNCHECK_BIN_DIR or re-run with sudo"
     chmod 0755 "$staged"

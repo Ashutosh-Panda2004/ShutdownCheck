@@ -52,7 +52,7 @@ vuln: ## Check dependencies for known vulnerabilities
 	@if command -v govulncheck >/dev/null 2>&1; then \
 		govulncheck $(PKGS); \
 	else \
-		echo "govulncheck not installed: go install golang.org/x/vuln/cmd/govulncheck@latest"; \
+		echo "govulncheck not installed: go install golang.org/x/vuln/cmd/govulncheck@v1.7.0"; \
 	fi
 
 fuzz: ## Run each fuzz target for FUZZTIME (default 30s)

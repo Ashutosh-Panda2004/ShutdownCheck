@@ -32,6 +32,12 @@ linters:
 
   exclusions:
     rules:
+      # Each build-tagged implementation returns a constant error state, but
+      # the shared caller's contract is intentionally portable across them.
+      - path: internal/target/process\.go
+        text: SA4023
+        linters:
+          - staticcheck
       # Test code may ignore errors and use weaker primitives.
       - path: _test\.go
         linters:
@@ -46,6 +52,7 @@ linters:
           - errcheck
           - gocritic
           - gosec
+          - noctx
           - revive
           - staticcheck
 

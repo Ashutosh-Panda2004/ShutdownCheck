@@ -79,61 +79,35 @@ signs:
     artifacts: checksum
     output: true
 
-dockers:
-  - id: linux-amd64
+dockers_v2:
+  - id: shutdowncheck
     ids:
       - shutdowncheck
-    goos: linux
-    goarch: amd64
     dockerfile: Dockerfile
-    use: buildx
-    image_templates:
-      - "ghcr.io/shutdowncheck/shutdowncheck:{{ .Version }}-amd64"
-      - "ghcr.io/shutdowncheck/shutdowncheck:latest-amd64"
-    build_flag_templates:
-      - "--platform=linux/amd64"
-      - "--label=org.opencontainers.image.title={{ .ProjectName }}"
-      - "--label=org.opencontainers.image.description=Verify that your service drains correctly when terminated"
-      - "--label=org.opencontainers.image.version={{ .Version }}"
-      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
-      - "--label=org.opencontainers.image.created={{ .CommitDate }}"
-      - "--label=org.opencontainers.image.source=https://github.com/shutdowncheck/shutdowncheck"
-      - "--label=org.opencontainers.image.licenses=Apache-2.0"
+    images:
+      - ghcr.io/shutdowncheck/shutdowncheck
+    tags:
+      - "{{ .Version }}"
+      - "{{ if not .Prerelease }}latest{{ end }}"
+    platforms:
+      - linux/amd64
+      - linux/arm64
+    labels:
+      org.opencontainers.image.title: "{{ .ProjectName }}"
+      org.opencontainers.image.description: Verify that your service drains correctly when terminated
+      org.opencontainers.image.version: "{{ .Version }}"
+      org.opencontainers.image.revision: "{{ .FullCommit }}"
+      org.opencontainers.image.created: "{{ .CommitDate }}"
+      org.opencontainers.image.source: https://github.com/shutdowncheck/shutdowncheck
+      org.opencontainers.image.licenses: Apache-2.0
+    sbom: true
 
-  - id: linux-arm64
-    ids:
-      - shutdowncheck
-    goos: linux
-    goarch: arm64
-    dockerfile: Dockerfile
-    use: buildx
-    image_templates:
-      - "ghcr.io/shutdowncheck/shutdowncheck:{{ .Version }}-arm64"
-      - "ghcr.io/shutdowncheck/shutdowncheck:latest-arm64"
-    build_flag_templates:
-      - "--platform=linux/arm64"
-      - "--label=org.opencontainers.image.title={{ .ProjectName }}"
-      - "--label=org.opencontainers.image.description=Verify that your service drains correctly when terminated"
-      - "--label=org.opencontainers.image.version={{ .Version }}"
-      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
-      - "--label=org.opencontainers.image.created={{ .CommitDate }}"
-      - "--label=org.opencontainers.image.source=https://github.com/shutdowncheck/shutdowncheck"
-      - "--label=org.opencontainers.image.licenses=Apache-2.0"
-
-docker_manifests:
-  - name_template: "ghcr.io/shutdowncheck/shutdowncheck:{{ .Version }}"
-    image_templates:
-      - "ghcr.io/shutdowncheck/shutdowncheck:{{ .Version }}-amd64"
-      - "ghcr.io/shutdowncheck/shutdowncheck:{{ .Version }}-arm64"
-  - name_template: "ghcr.io/shutdowncheck/shutdowncheck:latest"
-    image_templates:
-      - "ghcr.io/shutdowncheck/shutdowncheck:latest-amd64"
-      - "ghcr.io/shutdowncheck/shutdowncheck:latest-arm64"
-
-brews:
+homebrew_casks:
   - name: shutdowncheck
     ids:
       - default
+    binaries:
+      - shutdowncheck
     repository:
       owner: shutdowncheck
       name: homebrew-tap
@@ -141,8 +115,6 @@ brews:
     homepage: https://github.com/shutdowncheck/shutdowncheck
     description: Verify that your service drains in-flight requests when terminated
     license: Apache-2.0
-    test: |
-      system "#{bin}/shutdowncheck", "version"
 
 scoops:
   - name: shutdowncheck

@@ -45,13 +45,13 @@ function Get-BuildMetadata {
     }
 }
 
-function Target-Build {
+function Invoke-Build {
     $m = Get-BuildMetadata
     $ldflags = "-s -w -X main.version=$($m.Version) -X main.commit=$($m.Commit) -X main.date=$($m.Date)"
     Invoke-Step 'build' { go build -trimpath -ldflags $ldflags -o bin/shutdowncheck.exe ./cmd/shutdowncheck }
 }
 
-function Target-Fmt {
+function Test-Formatting {
     Write-Host '==> fmt' -ForegroundColor Cyan
     $unformatted = (gofmt -l .) | Where-Object { $_ -and ($_ -notlike 'test\conformance*') }
     if ($unformatted) {
@@ -61,8 +61,8 @@ function Target-Fmt {
     }
 }
 
-function Target-Lint {
-    Target-Fmt
+function Invoke-Lint {
+    Test-Formatting
     Invoke-Step 'vet' { go vet ./... }
     if (Get-Command golangci-lint -ErrorAction SilentlyContinue) {
         Invoke-Step 'golangci-lint' { golangci-lint run }
@@ -72,18 +72,18 @@ function Target-Lint {
     }
 }
 
-function Target-Vuln {
+function Invoke-VulnerabilityCheck {
     if (Get-Command govulncheck -ErrorAction SilentlyContinue) {
         Invoke-Step 'govulncheck' { govulncheck ./... }
     }
     else {
-        Write-Host 'govulncheck not installed: go install golang.org/x/vuln/cmd/govulncheck@latest' -ForegroundColor Yellow
+        Write-Host 'govulncheck not installed: go install golang.org/x/vuln/cmd/govulncheck@v1.7.0' -ForegroundColor Yellow
     }
 }
 
 # The race detector needs cgo and a C toolchain, which a bare Windows install
 # usually lacks. CI covers race on Linux and macOS, so skip rather than fail.
-function Target-Race {
+function Invoke-RaceTests {
     if (-not (Get-Command gcc -ErrorAction SilentlyContinue)) {
         Write-Host 'race detector needs cgo and a C compiler (gcc); skipping locally. CI runs it on Linux and macOS.' -ForegroundColor Yellow
         return
@@ -91,7 +91,7 @@ function Target-Race {
     Invoke-Step 'race' { go test -race ./... }
 }
 
-function Target-Cover {
+function Invoke-Coverage {
     # Quoting matters: PowerShell 5.1 splits bare -flag=value.ext arguments.
     Invoke-Step 'cover' { go test '-covermode=atomic' '-coverprofile=coverage.out' ./... }
     go tool cover '-func=coverage.out' | Select-Object -Last 1
@@ -111,19 +111,19 @@ switch ($Target) {
         Write-Host 'Targets: build test race cover fmt vet lint tidy vuln fuzz docs release-check snapshot ci clean'
         Write-Host 'Usage:   .\make.ps1 ci'
     }
-    'build' { Target-Build }
+    'build' { Invoke-Build }
     'test' { Invoke-Step 'test' { go test ./... } }
-    'race' { Target-Race }
-    'cover' { Target-Cover }
-    'fmt' { Target-Fmt }
+    'race' { Invoke-RaceTests }
+    'cover' { Invoke-Coverage }
+    'fmt' { Test-Formatting }
     'vet' { Invoke-Step 'vet' { go vet ./... } }
-    'lint' { Target-Lint }
+    'lint' { Invoke-Lint }
     'tidy' {
         Invoke-Step 'tidy' { go mod tidy }
         git diff --quiet -- go.mod go.sum
         if ($LASTEXITCODE -ne 0) { throw "go.mod/go.sum are not tidy; commit the result of 'go mod tidy'" }
     }
-    'vuln' { Target-Vuln }
+    'vuln' { Invoke-VulnerabilityCheck }
     'fuzz' {
         # Committed crashers under testdata/fuzz already run as part of `test`;
         # this explores for new ones.
@@ -131,10 +131,10 @@ switch ($Target) {
         Invoke-Step 'fuzz config' { go test ./internal/config '-run=XXX' '-fuzz=FuzzParse' '-fuzztime=30s' }
     }
     'ci' {
-        Target-Lint
+        Invoke-Lint
         Invoke-Step 'test' { go test ./... }
-        Target-Race
-        Target-Cover
+        Invoke-RaceTests
+        Invoke-Coverage
         Write-Host 'CI checks passed' -ForegroundColor Green
     }
     'docs' {
