@@ -17,6 +17,8 @@ var content embed.FS
 // than generic.
 type Stack string
 
+// StackUnknown and the other stack constants identify supported remediation
+// targets.
 const (
 	StackUnknown        Stack = ""
 	StackGoNetHTTP      Stack = "go-net-http"
