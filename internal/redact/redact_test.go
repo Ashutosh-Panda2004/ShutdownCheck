@@ -107,11 +107,32 @@ func TestURL(t *testing.T) {
 	}
 }
 
+func TestURLRedactsCompositeSecretKeysAndFragments(t *testing.T) {
+	const secret = "must-not-survive"
+	got := URL("https://example.test/x?client_secret=" + secret + "&refresh_token=" + secret +
+		"&X-Amz-Signature=" + secret + "#token=" + secret)
+
+	if strings.Contains(got, secret) || strings.Contains(got, "#") {
+		t.Fatalf("URL leaked a composite-key or fragment secret: %q", got)
+	}
+	if strings.Count(got, Placeholder) != 3 {
+		t.Errorf("URL = %q, want three redacted query values", got)
+	}
+}
+
 // An unparseable URL cannot be shown to be safe, so it must not be passed
 // through on the assumption that it is harmless.
 func TestURLFailsClosed(t *testing.T) {
 	if got := URL("http://[::1]:namedport/x?token=secret"); strings.Contains(got, "secret") {
 		t.Fatalf("an unparseable URL leaked its query: %q", got)
+	}
+}
+
+func TestURLFailsClosedOnMalformedQuery(t *testing.T) {
+	const secret = "malformed-query-secret"
+	got := URL("https://example.test/path?token=" + secret + ";bad")
+	if strings.Contains(got, secret) || !strings.Contains(got, Placeholder) {
+		t.Fatalf("malformed query did not fail closed: %q", got)
 	}
 }
 
@@ -125,6 +146,31 @@ func TestMessage(t *testing.T) {
 			in:       `Get "http://host/x?token=secret": dial tcp 1.2.3.4:80: connect: connection refused`,
 			mustHide: "secret",
 			mustKeep: "connection refused",
+		},
+		"unquoted url": {
+			in:       `upstream=https://user:hunter2@host/x?token=secret failed`,
+			mustHide: "hunter2",
+			mustKeep: "upstream=https://REDACTED@host/x?token=REDACTED",
+		},
+		"authorization header": {
+			in:       "request failed Authorization: Bearer top-secret-token",
+			mustHide: "top-secret-token",
+			mustKeep: "request failed Authorization: " + Placeholder,
+		},
+		"key value": {
+			in:       "database rejected db_password=hunter2 while connecting",
+			mustHide: "hunter2",
+			mustKeep: "while connecting",
+		},
+		"json value": {
+			in:       `config={"access_token":"abc123","mode":"test"}`,
+			mustHide: "abc123",
+			mustKeep: `"mode":"test"`,
+		},
+		"cookie header": {
+			in:       "upstream sent Cookie: session=abc; theme=dark",
+			mustHide: "session=abc",
+			mustKeep: "upstream sent Cookie: " + Placeholder,
 		},
 		"no url": {
 			in:       "connection reset by peer",
@@ -171,10 +217,45 @@ func TestMessageHandlesMultipleURLs(t *testing.T) {
 	}
 }
 
+func TestMessageRedactsNonHTTPConnectionURI(t *testing.T) {
+	const secret = "database-password"
+	got := Message("connect postgres://user:" + secret + "@db.internal/app")
+	if strings.Contains(got, secret) || !strings.Contains(got, Placeholder) {
+		t.Fatalf("connection URI was not redacted: %q", got)
+	}
+}
+
 func TestNonSensitiveHeadersSurviveUnchanged(t *testing.T) {
 	in := http.Header{"Accept": []string{"application/json"}}
 
 	if got := Headers(in).Get("Accept"); got != "application/json" {
 		t.Errorf("Accept = %q, want it preserved", got)
+	}
+}
+
+func TestTextRemovesTerminalAndBidirectionalControls(t *testing.T) {
+	got := Text("safe\x1b[31mred\x00\u202eevil")
+	for _, forbidden := range []string{"\x1b", "\x00", "\u202e"} {
+		if strings.Contains(got, forbidden) {
+			t.Fatalf("Text retained control %q in %q", forbidden, got)
+		}
+	}
+	if !strings.Contains(got, "safe") || !strings.Contains(got, "evil") {
+		t.Errorf("Text removed printable content: %q", got)
+	}
+}
+
+func TestTerminalEscapesCannotBypassSecretNameDetection(t *testing.T) {
+	const secret = "escape-obfuscated-secret"
+	escapedToken := "to\x1b[31mken"
+
+	for name, got := range map[string]string{
+		"argv":    Argv([]string{"./api", "--" + escapedToken + "=" + secret}),
+		"message": Message(escapedToken + "=" + secret),
+		"url":     URL("https://example.test/?" + escapedToken + "=" + secret),
+	} {
+		if strings.Contains(got, secret) {
+			t.Errorf("%s redaction leaked an ANSI-obfuscated secret: %q", name, got)
+		}
 	}
 }

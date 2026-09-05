@@ -9,7 +9,9 @@ package redact
 import (
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
+	"unicode"
 )
 
 // Placeholder replaces any redacted value.
@@ -46,6 +48,13 @@ var sensitiveQueryKeys = map[string]bool{
 	"token":        true,
 }
 
+var (
+	embeddedURL        = regexp.MustCompile(`[A-Za-z][A-Za-z0-9+.-]*://[^\s"'<>]+`)
+	ansiEscape         = regexp.MustCompile(`\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))`)
+	sensitiveLogHeader = regexp.MustCompile(`(?i)\b(authorization|proxy-authorization|cookie|set-cookie|x-api-key|x-auth-token|x-csrf-token)([ \t]*:[ \t]*)([^\r\n]*)`)
+	sensitiveLogValue  = regexp.MustCompile(`(?i)\b([a-z0-9_-]*(?:access[_-]?token|api[_-]?key|apikey|auth|credential|passwd|password|private[_-]?key|pwd|secret|token)[a-z0-9_-]*)(["']?[ \t]*[:=][ \t]*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;]+)`)
+)
+
 // IsSensitiveHeader reports whether a header must be redacted.
 func IsSensitiveHeader(name string) bool {
 	return sensitiveHeaders[strings.ToLower(strings.TrimSpace(name))]
@@ -56,13 +65,23 @@ func IsSensitiveHeader(name string) bool {
 var sensitiveWords = []string{
 	"apikey", "api-key", "api_key",
 	"auth", "credential", "passwd", "password",
-	"private", "pwd", "secret", "token",
+	"private", "pwd", "secret", "signature", "token",
 }
 
 func isSensitiveName(name string) bool {
-	lower := strings.ToLower(strings.TrimLeft(name, "-"))
+	lower := strings.ToLower(strings.TrimLeft(Text(name), "-"))
+	if lower == "key" || strings.HasSuffix(lower, "-key") || strings.HasSuffix(lower, "_key") {
+		return true
+	}
+	compact := strings.Map(func(r rune) rune {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			return r
+		}
+		return -1
+	}, lower)
 	for _, word := range sensitiveWords {
-		if strings.Contains(lower, word) {
+		normalizedWord := strings.NewReplacer("-", "", "_", "").Replace(word)
+		if strings.Contains(compact, normalizedWord) {
 			return true
 		}
 	}
@@ -80,6 +99,7 @@ func Argv(argv []string) string {
 	redactNext := false
 
 	for _, arg := range argv {
+		arg = Text(arg)
 		switch {
 		case redactNext:
 			out = append(out, Placeholder)
@@ -96,6 +116,15 @@ func Argv(argv []string) string {
 			case looksLikeURL(value):
 				out = append(out, name+"="+URL(value))
 			default:
+				out = append(out, name+"="+Message(value))
+			}
+
+		// --token:value and /password:value are common in cross-platform CLIs.
+		case strings.Contains(arg, ":") && (strings.HasPrefix(arg, "-") || strings.HasPrefix(arg, "/")):
+			name, _, _ := strings.Cut(arg, ":")
+			if isSensitiveName(strings.TrimLeft(name, "/")) {
+				out = append(out, name+":"+Placeholder)
+			} else {
 				out = append(out, arg)
 			}
 
@@ -108,10 +137,10 @@ func Argv(argv []string) string {
 			out = append(out, URL(arg))
 
 		default:
-			out = append(out, arg)
+			out = append(out, Message(arg))
 		}
 	}
-	return strings.Join(out, " ")
+	return Text(strings.Join(out, " "))
 }
 
 // Headers returns a copy with sensitive values replaced.
@@ -126,7 +155,10 @@ func Headers(h http.Header) http.Header {
 			out[name] = []string{Placeholder}
 			continue
 		}
-		out[name] = append([]string(nil), values...)
+		out[name] = make([]string, len(values))
+		for i, value := range values {
+			out[name][i] = Text(value)
+		}
 	}
 	return out
 }
@@ -139,6 +171,7 @@ func URL(raw string) string {
 	if raw == "" {
 		return ""
 	}
+	raw = Text(raw)
 
 	parsed, err := url.Parse(raw)
 	if err != nil {
@@ -148,11 +181,20 @@ func URL(raw string) string {
 	if parsed.User != nil {
 		parsed.User = url.User(Placeholder)
 	}
+	// Fragments are never sent in an HTTP request and can only leak local data
+	// into reports, so there is no diagnostic value in retaining them.
+	parsed.Fragment = ""
+	parsed.RawFragment = ""
 
-	if query := parsed.Query(); len(query) > 0 {
+	if parsed.RawQuery != "" {
+		query, err := url.ParseQuery(parsed.RawQuery)
+		if err != nil {
+			parsed.RawQuery = "redacted=" + url.QueryEscape(Placeholder)
+			return Text(parsed.String())
+		}
 		changed := false
 		for key := range query {
-			if sensitiveQueryKeys[strings.ToLower(key)] {
+			if sensitiveQueryKeys[strings.ToLower(key)] || isSensitiveName(key) {
 				query.Set(key, Placeholder)
 				changed = true
 			}
@@ -162,17 +204,16 @@ func URL(raw string) string {
 		}
 	}
 
-	return parsed.String()
+	return Text(parsed.String())
 }
 
-// Message scrubs URLs embedded in an error string.
-//
-// Transport errors are formatted as `Get "http://host/path?token=x": ...`, so
-// the quoted URL is extracted and redacted in place.
+// Message scrubs URLs, headers and key/value credentials in a log line.
 func Message(msg string) string {
 	if msg == "" {
 		return ""
 	}
+	msg = Text(msg)
+	msg = embeddedURL.ReplaceAllStringFunc(msg, URL)
 
 	var b strings.Builder
 	rest := msg
@@ -180,12 +221,12 @@ func Message(msg string) string {
 		start := strings.IndexByte(rest, '"')
 		if start < 0 {
 			b.WriteString(rest)
-			return b.String()
+			break
 		}
 		end := strings.IndexByte(rest[start+1:], '"')
 		if end < 0 {
 			b.WriteString(rest)
-			return b.String()
+			break
 		}
 		end += start + 1
 
@@ -200,8 +241,24 @@ func Message(msg string) string {
 
 		rest = rest[end+1:]
 	}
+
+	redacted := sensitiveLogHeader.ReplaceAllString(b.String(), "${1}${2}"+Placeholder)
+	return Text(sensitiveLogValue.ReplaceAllString(redacted, "${1}${2}"+Placeholder))
+}
+
+// Text removes terminal controls and bidirectional formatting characters from
+// untrusted text while preserving its printable diagnostic content.
+func Text(value string) string {
+	value = ansiEscape.ReplaceAllString(value, "")
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) || (r >= '\u202a' && r <= '\u202e') || (r >= '\u2066' && r <= '\u2069') {
+			return ' '
+		}
+		return r
+	}, value)
 }
 
 func looksLikeURL(s string) bool {
-	return strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://")
+	parsed, err := url.Parse(s)
+	return err == nil && parsed.Scheme != "" && strings.HasPrefix(s, parsed.Scheme+"://")
 }
