@@ -10,8 +10,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/shutdowncheck/shutdowncheck/internal/clock"
-	"github.com/shutdowncheck/shutdowncheck/internal/redact"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/clock"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/redact"
 )
 
 // Readiness polling defaults.

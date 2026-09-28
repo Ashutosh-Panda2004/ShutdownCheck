@@ -10,8 +10,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/shutdowncheck/shutdowncheck/internal/redact"
-	"github.com/shutdowncheck/shutdowncheck/internal/timeline"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/redact"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/timeline"
 )
 
 // Readiness polls the target's readiness endpoint.

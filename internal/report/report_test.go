@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shutdowncheck/shutdowncheck/internal/analyze"
-	"github.com/shutdowncheck/shutdowncheck/internal/timeline"
-	"github.com/shutdowncheck/shutdowncheck/pkg/schema"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/analyze"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/timeline"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/pkg/schema"
 )
 
 var update = flag.Bool("update", false, "rewrite golden files")
@@ -344,8 +344,8 @@ func TestFormatValidity(t *testing.T) {
 			t.Errorf("%q is listed but reports itself invalid", f)
 		}
 	}
-	if Format("html").Valid() {
-		t.Error("html is not supported and must not validate")
+	if !Format("html").Valid() {
+		t.Error("html is supported and must validate")
 	}
 }
 
@@ -379,5 +379,90 @@ func TestThousandsSeparator(t *testing.T) {
 		if got := thousands(in); got != want {
 			t.Errorf("thousands(%d) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+func TestHTMLRendersVerdictTimelineAndDots(t *testing.T) {
+	result, tl := brokenRun(t)
+
+	var buf bytes.Buffer
+	if err := HTML(&buf, result, tl, Options{}); err != nil {
+		t.Fatalf("HTML: %v", err)
+	}
+	got := buf.String()
+
+	for _, want := range []string{
+		"<!DOCTYPE html>",
+		`lang="en"`,
+		"ShutdownCheck —",      // title
+		"FAIL",                 // verdict banner
+		`aria-label="score`,    // score gauge
+		"SIGTERM",              // timeline milestone
+		"Listener closed",      // timeline milestone
+		"Process exited",       // timeline milestone
+		"<circle",              // request dots
+		"SC003",                // findings
+		`class="fix"`,          // fix panel
+		"no external requests", // self-contained footer note
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("HTML report missing %q", want)
+		}
+	}
+	if strings.Contains(got, "http://") && strings.Contains(got, "<script src=") {
+		t.Error("HTML report must not reference external assets")
+	}
+	// The fix panel must render the remediation page as HTML, not raw markdown.
+	if strings.Contains(got, "## How to fix it") {
+		t.Error("fix panel leaked raw markdown")
+	}
+	if !strings.Contains(got, "How to fix it") {
+		t.Error("fix panel did not render the remediation guidance")
+	}
+}
+
+func TestHTMLHealthyRun(t *testing.T) {
+	result, tl := healthyRun(t)
+
+	var buf bytes.Buffer
+	if err := HTML(&buf, result, tl, Options{}); err != nil {
+		t.Fatalf("HTML: %v", err)
+	}
+	got := buf.String()
+	if !strings.Contains(got, "PASS") {
+		t.Error("healthy run should render a PASS verdict")
+	}
+	if !strings.Contains(got, "SC014") {
+		t.Error("healthy run should still list its warning finding")
+	}
+}
+
+func TestHTMLEscapesTargetLabel(t *testing.T) {
+	result, tl := brokenRun(t)
+	result.Report.Target.Label = `api"><script>alert(1)</script>`
+
+	var buf bytes.Buffer
+	if err := HTML(&buf, result, tl, Options{}); err != nil {
+		t.Fatalf("HTML: %v", err)
+	}
+	got := buf.String()
+	if strings.Contains(got, `<script>alert(1)</script>`) {
+		t.Error("target label was not escaped")
+	}
+	if !strings.Contains(got, "&lt;script&gt;") {
+		t.Error("target label escaping missing")
+	}
+}
+
+func TestHTMLInconclusive(t *testing.T) {
+	result, tl := brokenRun(t)
+	result.Report.Verdict = schema.VerdictInconclusive
+
+	var buf bytes.Buffer
+	if err := HTML(&buf, result, tl, Options{}); err != nil {
+		t.Fatalf("HTML: %v", err)
+	}
+	if got := buf.String(); !strings.Contains(got, "INCONCLUSIVE") {
+		t.Error("inconclusive verdict should render")
 	}
 }

@@ -11,7 +11,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/shutdowncheck/shutdowncheck/internal/redact"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/redact"
 )
 
 // dockerBinary is the CLI this package drives. It is never passed to a shell

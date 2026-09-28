@@ -9,15 +9,15 @@ import (
 	"strings"
 	"time"
 
-	"github.com/shutdowncheck/shutdowncheck/internal/analyze"
-	"github.com/shutdowncheck/shutdowncheck/internal/config"
-	"github.com/shutdowncheck/shutdowncheck/internal/probe"
-	"github.com/shutdowncheck/shutdowncheck/internal/redact"
-	"github.com/shutdowncheck/shutdowncheck/internal/remediate"
-	"github.com/shutdowncheck/shutdowncheck/internal/report"
-	"github.com/shutdowncheck/shutdowncheck/internal/target"
-	"github.com/shutdowncheck/shutdowncheck/internal/timeline"
-	"github.com/shutdowncheck/shutdowncheck/pkg/schema"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/analyze"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/config"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/probe"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/redact"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/remediate"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/report"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/target"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/timeline"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/pkg/schema"
 )
 
 func (f *runFlags) applyTargetOverride(r *config.Resolved) (bool, error) {

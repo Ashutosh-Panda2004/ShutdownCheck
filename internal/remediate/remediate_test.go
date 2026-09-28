@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shutdowncheck/shutdowncheck/internal/analyze"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/analyze"
 )
 
 // A finding the tool cannot explain is a finding nobody can act on, so every

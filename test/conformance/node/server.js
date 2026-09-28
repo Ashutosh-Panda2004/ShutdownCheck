@@ -91,9 +91,8 @@ async function onSigterm() {
 
     case 'abrupt-reset':
       ready = false;
-      await sleep(lameDuckMs);
+      // Close immediately: destroys live connections rather than letting them finish.
       server.close();
-      // Destroys live connections rather than letting them finish.
       if (server.closeAllConnections) {
         server.closeAllConnections();
       }

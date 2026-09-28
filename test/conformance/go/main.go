@@ -153,8 +153,8 @@ func shutdown(srv *http.Server, listener net.Listener, mode string, lameDuck tim
 
 	case ModeAbruptReset:
 		ready.Store(false)
-		time.Sleep(lameDuck)
-		// Close destroys live connections rather than draining them.
+		// Close immediately: destroying live connections (including the ones
+		// in flight at the signal) rather than draining them.
 		_ = srv.Close()
 
 	case ModeSlowDrain:
@@ -166,8 +166,8 @@ func shutdown(srv *http.Server, listener net.Listener, mode string, lameDuck tim
 
 	case ModeEarlyExit:
 		ready.Store(false)
-		time.Sleep(lameDuck)
-		// Leaves without waiting for anything still in progress.
+		// Exits immediately without waiting for anything still in progress,
+		// abandoning the requests in flight at the signal.
 		os.Exit(0)
 
 	case ModeOrphanChild:
@@ -184,6 +184,9 @@ func shutdown(srv *http.Server, listener net.Listener, mode string, lameDuck tim
 	case ModeSlowReadiness:
 		time.Sleep(3 * time.Second)
 		ready.Store(false)
+		// Wait for the readiness probe to observe the flip before shutting
+		// down, so the tool can measure how late the flip was.
+		time.Sleep(500 * time.Millisecond)
 		_ = srv.Shutdown(context.Background())
 
 	case ModeReadinessFlap:

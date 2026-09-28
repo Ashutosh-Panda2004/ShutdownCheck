@@ -16,7 +16,7 @@ Thanks for considering it. This project has an unusual constraint that shapes al
 Requires Go (minimum version in `go.mod`) and git.
 
 ```console
-git clone https://github.com/shutdowncheck/shutdowncheck
+git clone https://github.com/Ashutosh-Panda2004/ShutdownCheck
 cd shutdowncheck
 
 make ci             # Linux / macOS

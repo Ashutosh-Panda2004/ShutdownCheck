@@ -20,8 +20,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shutdowncheck/shutdowncheck/internal/cli"
-	"github.com/shutdowncheck/shutdowncheck/pkg/schema"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/cli"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/pkg/schema"
 )
 
 var serverBinary string

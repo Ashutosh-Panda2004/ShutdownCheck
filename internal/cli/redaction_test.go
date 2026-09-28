@@ -8,14 +8,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shutdowncheck/shutdowncheck/internal/analyze"
-	"github.com/shutdowncheck/shutdowncheck/internal/config"
-	"github.com/shutdowncheck/shutdowncheck/internal/load"
-	"github.com/shutdowncheck/shutdowncheck/internal/redact"
-	runpkg "github.com/shutdowncheck/shutdowncheck/internal/run"
-	"github.com/shutdowncheck/shutdowncheck/internal/target"
-	"github.com/shutdowncheck/shutdowncheck/internal/timeline"
-	"github.com/shutdowncheck/shutdowncheck/pkg/schema"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/analyze"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/config"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/load"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/redact"
+	runpkg "github.com/Ashutosh-Panda2004/ShutdownCheck/internal/run"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/target"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/timeline"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/pkg/schema"
 )
 
 // Distinctive enough that finding one anywhere in an artefact is unambiguous.

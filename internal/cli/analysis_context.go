@@ -4,11 +4,11 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/shutdowncheck/shutdowncheck/internal/analyze"
-	"github.com/shutdowncheck/shutdowncheck/internal/config"
-	"github.com/shutdowncheck/shutdowncheck/internal/redact"
-	"github.com/shutdowncheck/shutdowncheck/internal/timeline"
-	"github.com/shutdowncheck/shutdowncheck/pkg/schema"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/analyze"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/config"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/redact"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/timeline"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/pkg/schema"
 )
 
 const analysisContextVersion = 1

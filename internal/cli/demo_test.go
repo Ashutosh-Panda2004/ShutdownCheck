@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shutdowncheck/shutdowncheck/internal/target"
-	"github.com/shutdowncheck/shutdowncheck/pkg/schema"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/target"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/pkg/schema"
 )
 
 // The demo self-spawns the real binary, so the run itself is exercised in

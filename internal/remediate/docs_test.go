@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shutdowncheck/shutdowncheck/internal/analyze"
-	"github.com/shutdowncheck/shutdowncheck/internal/remediate"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/analyze"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/remediate"
 )
 
 var update = flag.Bool("update", false, "rewrite the published signature pages under docs/signatures")

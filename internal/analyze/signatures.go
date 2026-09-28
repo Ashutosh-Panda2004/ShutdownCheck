@@ -3,7 +3,7 @@ package analyze
 import (
 	"fmt"
 
-	"github.com/shutdowncheck/shutdowncheck/internal/timeline"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/timeline"
 )
 
 // registry holds every detection rule. Each is independent: it reads Facts and
@@ -284,6 +284,13 @@ var ruleEarlyExit = rule{
 		abandoned := 0
 		for _, req := range f.Requests {
 			if req.Phase == PhaseWarmup || req.Outcome.Succeeded() {
+				continue
+			}
+			// A refused request never reached the server: the dial failed, so
+			// it wasn't accepted work and can't have been abandoned. Without
+			// this, a post-signal dial that completes a hair after the process
+			// exit timestamp flaps SC011 on servers that did everything right.
+			if req.Outcome == timeline.OutcomeRefused {
 				continue
 			}
 			if req.Sent < *f.ExitAt && req.Done > *f.ExitAt {

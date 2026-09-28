@@ -113,9 +113,8 @@ def shutdown(server, mode, lame_duck):
 
     elif mode == "abrupt-reset":
         STATE["ready"] = False
-        time.sleep(lame_duck)
-        # Setting SO_LINGER to zero makes close() send RST rather than FIN,
-        # destroying live connections instead of draining them.
+        # Close immediately: setting SO_LINGER to zero makes close() send RST
+        # rather than FIN, destroying live connections instead of draining them.
         try:
             server.socket.setsockopt(
                 socket.SOL_SOCKET, socket.SO_LINGER, b"\x01\x00\x00\x00\x00\x00\x00\x00"

@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shutdowncheck/shutdowncheck/internal/timeline"
-	"github.com/shutdowncheck/shutdowncheck/pkg/schema"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/timeline"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/pkg/schema"
 )
 
 // The boundaries decide which bucket a request lands in, and the in-flight

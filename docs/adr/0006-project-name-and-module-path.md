@@ -16,7 +16,7 @@ Keep **ShutdownCheck**. The binary is `shutdowncheck`, with `sdc` as a shorthand
 The Go module path is:
 
 ```
-github.com/shutdowncheck/shutdowncheck
+github.com/Ashutosh-Panda2004/ShutdownCheck
 ```
 
 ## Consequences

@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/shutdowncheck/shutdowncheck/internal/analyze"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/analyze"
 )
 
 //go:embed signatures/*.md

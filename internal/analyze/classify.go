@@ -4,7 +4,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/shutdowncheck/shutdowncheck/internal/timeline"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/timeline"
 )
 
 // Phase is where a request sits relative to the termination signal.
@@ -233,7 +233,13 @@ func (f *Facts) markAcceptanceAfterWindow(tl timeline.Timeline, policy Policy) {
 	if !f.HasSignal {
 		return
 	}
-	windowEnd := f.SignalAt + policy.AcceptWindow
+	// The window's end is uncertain by the signal-skew budget: SignalAt is when
+	// the tool sent the signal, and delivery, handler dispatch and close() all
+	// take real time. Without this allowance a zero accept window would demand
+	// the listener close within zero nanoseconds of the signal, so every
+	// compliant server under the strict profile would flake SC005 depending on
+	// where the 20ms listener probe happened to land.
+	windowEnd := f.SignalAt + policy.AcceptWindow + MaxSignalSkew
 
 	for _, e := range tl.EventsOfKind(timeline.KindListener) {
 		if e.Offset > windowEnd && e.Listener.Accepting {
@@ -262,7 +268,13 @@ func (f *Facts) summariseReadiness(tl timeline.Timeline) {
 		}
 
 		switch {
-		case !healthy && f.ReadinessFlippedAt == nil:
+		case !healthy && f.ReadinessFlippedAt == nil && e.Readiness.Status != 0:
+			// A flip means the endpoint answered unhealthy. Connection-level
+			// failures (refused, reset, timeout) after the listener closed are
+			// the server being dead, not the server telling the load balancer
+			// to stop sending traffic: counting those as a flip would mask
+			// SC007 for every server that closes its listener without ever
+			// failing readiness first.
 			at := e.Offset
 			f.ReadinessFlippedAt = &at
 		case healthy && f.ReadinessFlippedAt != nil:

@@ -8,11 +8,11 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/shutdowncheck/shutdowncheck/internal/analyze"
-	"github.com/shutdowncheck/shutdowncheck/internal/redact"
-	"github.com/shutdowncheck/shutdowncheck/internal/report"
-	"github.com/shutdowncheck/shutdowncheck/internal/timeline"
-	"github.com/shutdowncheck/shutdowncheck/pkg/schema"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/analyze"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/redact"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/report"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/timeline"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/pkg/schema"
 )
 
 // analyzeCommand re-judges a recorded run without repeating it.
@@ -162,7 +162,7 @@ Re-judges a recorded run without running it again.
 
 Flags:
   --profile <name>   re-judge under a different shutdown profile
-  --format <name>    human, json, junit, markdown, ndjson
+  --format <name>    human, json, junit, markdown, ndjson, html
   --no-color         disable coloured output
   --no-timeline      omit the timeline visualisation
 

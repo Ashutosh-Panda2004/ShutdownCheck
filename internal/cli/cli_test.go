@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shutdowncheck/shutdowncheck/internal/timeline"
-	"github.com/shutdowncheck/shutdowncheck/pkg/schema"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/timeline"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/pkg/schema"
 )
 
 func execute(t *testing.T, args ...string) (code int, stdout, stderr string) {

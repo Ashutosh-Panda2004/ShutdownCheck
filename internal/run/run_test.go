@@ -8,12 +8,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shutdowncheck/shutdowncheck/internal/analyze"
-	"github.com/shutdowncheck/shutdowncheck/internal/clock"
-	"github.com/shutdowncheck/shutdowncheck/internal/load"
-	"github.com/shutdowncheck/shutdowncheck/internal/target"
-	"github.com/shutdowncheck/shutdowncheck/internal/testutil"
-	"github.com/shutdowncheck/shutdowncheck/internal/timeline"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/analyze"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/clock"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/load"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/target"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/testutil"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/timeline"
 )
 
 // fakeTarget models a process's response to signals without needing one.

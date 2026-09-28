@@ -7,7 +7,7 @@ import (
 	"io"
 	"time"
 
-	"github.com/shutdowncheck/shutdowncheck/internal/config"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/config"
 )
 
 // minimumRunCeiling keeps the derived ceiling sane for very short runs, where

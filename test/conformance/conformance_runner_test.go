@@ -21,8 +21,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shutdowncheck/shutdowncheck/internal/cli"
-	"github.com/shutdowncheck/shutdowncheck/pkg/schema"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/cli"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/pkg/schema"
 )
 
 // freePort reserves and releases a port so the server can be told exactly where
@@ -109,8 +109,11 @@ func assertScenario(t *testing.T, s scenario, code int, output, stderrText strin
 	t.Helper()
 
 	// The single most important property in the whole project: a server with a
-	// known defect must never produce a pass.
-	if s.mode != "correct" && code == schema.ExitPass {
+	// known defect must never produce a pass. "Known defect" is
+	// profile-relative: instant-close is defective under kubernetes but
+	// compliant under strict, so a scenario that explicitly expects a pass is
+	// exempt from this guard.
+	if s.verdict != schema.VerdictPass && s.mode != "correct" && code == schema.ExitPass {
 		t.Fatalf("a broken server produced a PASS, which is a false negative\n%s", output)
 	}
 

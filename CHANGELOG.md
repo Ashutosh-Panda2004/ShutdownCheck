@@ -233,4 +233,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The orphaned-listener defect (SC012) cannot be reproduced inside a container:
   when PID 1 exits, the daemon reaps everything else with it.
 
-[Unreleased]: https://github.com/shutdowncheck/shutdowncheck/commits/main
+[Unreleased]: https://github.com/Ashutosh-Panda2004/ShutdownCheck/commits/main

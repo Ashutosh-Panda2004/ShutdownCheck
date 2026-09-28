@@ -9,7 +9,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/shutdowncheck/shutdowncheck/internal/timeline"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/timeline"
 )
 
 // Sink receives events as they are observed.

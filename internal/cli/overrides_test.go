@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shutdowncheck/shutdowncheck/internal/analyze"
-	"github.com/shutdowncheck/shutdowncheck/internal/config"
-	"github.com/shutdowncheck/shutdowncheck/internal/target"
-	"github.com/shutdowncheck/shutdowncheck/pkg/schema"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/analyze"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/config"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/target"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/pkg/schema"
 )
 
 func resolveRunFlags(t *testing.T, args ...string) *runFlags {

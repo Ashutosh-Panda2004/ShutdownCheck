@@ -14,18 +14,18 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/shutdowncheck/shutdowncheck/internal/analyze"
-	"github.com/shutdowncheck/shutdowncheck/internal/clock"
-	"github.com/shutdowncheck/shutdowncheck/internal/config"
-	"github.com/shutdowncheck/shutdowncheck/internal/load"
-	"github.com/shutdowncheck/shutdowncheck/internal/probe"
-	"github.com/shutdowncheck/shutdowncheck/internal/redact"
-	"github.com/shutdowncheck/shutdowncheck/internal/remediate"
-	"github.com/shutdowncheck/shutdowncheck/internal/report"
-	"github.com/shutdowncheck/shutdowncheck/internal/run"
-	"github.com/shutdowncheck/shutdowncheck/internal/target"
-	"github.com/shutdowncheck/shutdowncheck/internal/timeline"
-	"github.com/shutdowncheck/shutdowncheck/pkg/schema"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/analyze"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/clock"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/config"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/load"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/probe"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/redact"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/remediate"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/report"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/run"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/target"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/timeline"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/pkg/schema"
 )
 
 type runFlags struct {
@@ -137,7 +137,7 @@ func parseRunFlags(args []string, stderr io.Writer) (*runFlags, error) {
 	f.fs.DurationVar(&f.timeout, "timeout", 0, "wall-clock ceiling for the whole run (default: derived from the run's own budget)")
 	f.fs.IntVar(&f.maxRecords, "max-records", timeline.DefaultRecordLimit, "cap on high-volume evidence events, so a long run cannot exhaust memory")
 
-	f.fs.StringVar(&f.format, "format", string(report.FormatHuman), "output format: human, json, junit, markdown, ndjson")
+	f.fs.StringVar(&f.format, "format", string(report.FormatHuman), "output format: human, json, junit, markdown, ndjson, html")
 	f.fs.StringVar(&f.output, "output", "", "also write the report to this file")
 	f.fs.StringVar(&f.badge, "badge", "", "write an SVG score badge to this file")
 	f.fs.BoolVar(&f.noColor, "no-color", false, "disable coloured output")
@@ -188,7 +188,7 @@ Common flags:
   --profile <name>        auto, standalone, strict, lame-duck, kubernetes, docker
   --grace-period <dur>    how long the orchestrator would wait before SIGKILL
   --trials <n>            repeat the experiment; 3 is recommended in CI
-  --format <name>         human, json, junit, markdown, ndjson
+  --format <name>         human, json, junit, markdown, ndjson, html
   --config <path>         read settings from a configuration file
 
 Profiles decide what "correct" means. Under kubernetes and lame-duck a service
@@ -705,6 +705,10 @@ func emit(flags *runFlags, result analyze.Result, stdout io.Writer) error {
 			return report.Markdown(w, result)
 		case report.FormatNDJSON:
 			return report.NDJSON(w, flags.lastTimeline)
+		case report.FormatHTML:
+			return report.HTML(w, result, flags.lastTimeline, report.Options{
+				NoColor: flags.noColor, Quiet: flags.quiet,
+			})
 		default:
 			return report.Human(w, result, flags.lastTimeline, report.Options{
 				Width: flags.width, NoColor: flags.noColor,

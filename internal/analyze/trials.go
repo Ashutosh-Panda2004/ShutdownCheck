@@ -3,7 +3,7 @@ package analyze
 import (
 	"errors"
 
-	"github.com/shutdowncheck/shutdowncheck/pkg/schema"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/pkg/schema"
 )
 
 // ErrNoTrials reports an aggregation with nothing to aggregate.

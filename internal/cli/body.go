@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/shutdowncheck/shutdowncheck/internal/config"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/config"
 )
 
 // Body limits bound both an individual payload and their retained aggregate.

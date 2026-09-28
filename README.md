@@ -90,9 +90,9 @@ Full sample output is in [spec section 3.3](shutdowncheck-spec.md).
 | Script | `curl -fsSL https://raw.githubusercontent.com/shutdowncheck/shutdowncheck/main/install.sh \| sh` |
 | Homebrew | `brew install shutdowncheck/tap/shutdowncheck` |
 | Scoop | `scoop bucket add shutdowncheck https://github.com/shutdowncheck/scoop-bucket && scoop install shutdowncheck` |
-| Go | `go install github.com/shutdowncheck/shutdowncheck/cmd/shutdowncheck@latest` |
+| Go | `go install github.com/Ashutosh-Panda2004/ShutdownCheck/cmd/shutdowncheck@latest` |
 | Docker | `docker run --rm ghcr.io/shutdowncheck/shutdowncheck:latest version` |
-| Binaries | [Releases](https://github.com/shutdowncheck/shutdowncheck/releases) — linux, macOS and Windows on amd64 and arm64 |
+| Binaries | [Releases](https://github.com/Ashutosh-Panda2004/ShutdownCheck/releases) — linux, macOS and Windows on amd64 and arm64 |
 
 Then see what a report looks like, with nothing of your own to set up:
 
@@ -147,7 +147,7 @@ without gating while you work through what it finds.
 Requires Go (see `go.mod` for the minimum version).
 
 ```console
-git clone https://github.com/shutdowncheck/shutdowncheck
+git clone https://github.com/Ashutosh-Panda2004/ShutdownCheck
 cd shutdowncheck
 make build          # or: .\make.ps1 build   on Windows
 make ci             # lint, test, race, coverage
@@ -159,12 +159,18 @@ make ci             # lint, test, race, coverage
 |---|---|
 | [shutdowncheck-spec.md](shutdowncheck-spec.md) | Full technical specification and locked design decisions |
 | [docs/adr/](docs/adr/) | Architecture decision records |
+| [docs/faq.md](docs/faq.md) | How this differs from Gremlin/Litmus/Chaos Mesh, service meshes, and the business model |
+| [docs/demo-script.md](docs/demo-script.md) | 90-second fail → explain → fix → pass demo script with backup recording plan |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to build, test and propose changes |
 | [SECURITY.md](SECURITY.md) | Vulnerability reporting and the tool's security posture |
 
 ## Scope
 
 ShutdownCheck does exactly one thing. It is **not** a chaos engineering platform, not an APM, not a load testing tool, and not a service mesh validator. See the Non-Goals section of the spec before proposing features.
+
+## Origin
+
+Built in a weekend by [Ashutosh Panda](https://github.com/Ashutosh-Panda2004) because every "graceful shutdown" tutorial was wrong about Kubernetes. The lame-duck pattern isn't documented in most frameworks, and the only way to learn it was to cause 502s in production. This tool exists so you don't have to.
 
 ## License
 

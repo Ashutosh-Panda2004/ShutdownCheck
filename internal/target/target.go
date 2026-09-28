@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/shutdowncheck/shutdowncheck/internal/analyze"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/analyze"
 )
 
 // Signal is a portable termination signal name.

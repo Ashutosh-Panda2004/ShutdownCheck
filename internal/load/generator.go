@@ -7,10 +7,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/shutdowncheck/shutdowncheck/internal/clock"
-	"github.com/shutdowncheck/shutdowncheck/internal/probe"
-	"github.com/shutdowncheck/shutdowncheck/internal/redact"
-	"github.com/shutdowncheck/shutdowncheck/internal/timeline"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/clock"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/probe"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/redact"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/timeline"
 )
 
 // Successful latency samples are useful for calibration but do not need to

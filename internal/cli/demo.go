@@ -14,8 +14,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/shutdowncheck/shutdowncheck/internal/target"
-	"github.com/shutdowncheck/shutdowncheck/pkg/schema"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/target"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/pkg/schema"
 )
 
 // demoServerCommand is hidden from help on purpose. It exists so that `demo`
@@ -35,7 +35,7 @@ func demoCommand(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 
 	profile := fs.String("profile", "kubernetes", "shutdown profile to judge the demo under")
-	format := fs.String("format", "human", "output format: human, json, junit, markdown, ndjson")
+	format := fs.String("format", "human", "output format: human, json, junit, markdown, ndjson, html")
 	noColor := fs.Bool("no-color", false, "disable coloured output")
 	fs.Usage = func() { printDemoUsage(stderr) }
 
@@ -106,7 +106,7 @@ and the report is measured by the same code path as any other run.
 
 Flags:
   --profile <name>   judge the demo under a different profile (default kubernetes)
-  --format <name>    human, json, junit, markdown, ndjson
+  --format <name>    human, json, junit, markdown, ndjson, html
   --no-color         disable coloured output
 
 Try the same evidence under another deployment model:

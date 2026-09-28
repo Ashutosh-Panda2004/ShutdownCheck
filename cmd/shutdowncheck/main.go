@@ -8,7 +8,7 @@ import (
 	"os"
 	"runtime/debug"
 
-	"github.com/shutdowncheck/shutdowncheck/internal/cli"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/cli"
 )
 
 // Overridden at release time via -ldflags.

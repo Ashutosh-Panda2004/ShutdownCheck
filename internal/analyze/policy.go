@@ -6,7 +6,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/shutdowncheck/shutdowncheck/pkg/schema"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/pkg/schema"
 )
 
 // Profile encodes what correct termination means for a deployment model.
@@ -164,16 +164,25 @@ func PolicyFor(p Profile) (Policy, error) {
 	switch p {
 	case ProfileStrict:
 		policy.AcceptWindow = 0
-		policy.severities[SC006] = schema.SeverityInfo // closing immediately is the requirement here
+		// Closing immediately is the requirement here, so the minimum
+		// de-registration gap is zero and SC006 can never fire: the rule is
+		// vacuous rather than merely downgraded, because reporting it at any
+		// severity would contradict the profile's own definition of correct.
+		policy.DeregMin = 0
+		policy.severities[SC006] = schema.SeverityInfo // only reachable via an explicit --dereg-min override
 
 	case ProfileStandalone:
 		policy.AcceptWindow = 0
+		// With no load balancer there is no de-registration to race, so a
+		// listener that lingers is sloppy rather than traffic-dropping.
+		policy.severities[SC005] = schema.SeverityWarn
 		policy.severities[SC006] = schema.SeverityWarn
 		policy.severities[SC007] = schema.SeverityWarn
 
 	case ProfileDocker:
 		policy.AcceptWindow = 0
 		policy.GracePeriod = DefaultDockerGracePeriod
+		policy.severities[SC005] = schema.SeverityWarn
 		policy.severities[SC006] = schema.SeverityWarn
 		policy.severities[SC007] = schema.SeverityWarn
 

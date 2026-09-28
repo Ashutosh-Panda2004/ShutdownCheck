@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shutdowncheck/shutdowncheck/internal/cli"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/cli"
 )
 
 // The Docker target has to reach the same verdicts as the process target, or

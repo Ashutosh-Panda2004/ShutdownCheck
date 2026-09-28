@@ -3,7 +3,7 @@ package analyze
 import (
 	"sort"
 
-	"github.com/shutdowncheck/shutdowncheck/pkg/schema"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/pkg/schema"
 )
 
 // Stage identifies which of the seven stages of correct termination a signature

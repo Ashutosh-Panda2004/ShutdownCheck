@@ -925,7 +925,7 @@ CI matrix: Linux, macOS and Windows for build/unit coverage; real POSIX process 
 Distribution is a first-class feature, not an afterthought — the tool's whole premise is "drop it in anywhere."
 
 - **Binaries** for linux/macos/windows × amd64/arm64 via GoReleaser, attached to GitHub Releases, signed and with SBOMs.
-- **`go install github.com/shutdowncheck/shutdowncheck/cmd/shutdowncheck@latest`**
+- **`go install github.com/Ashutosh-Panda2004/ShutdownCheck/cmd/shutdowncheck@latest`**
 - **Homebrew tap**, **Scoop** manifest, and an install script (`curl … | sh`, with checksum verification documented).
 - **Container image** (`ghcr.io/shutdowncheck/shutdowncheck`), distroless, multi-arch — the zero-install path for CI.
 - **GitHub Action** at repository-root `action.yml`, published to the Marketplace:

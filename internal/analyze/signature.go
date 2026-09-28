@@ -3,7 +3,7 @@ package analyze
 import (
 	"sort"
 
-	"github.com/shutdowncheck/shutdowncheck/pkg/schema"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/pkg/schema"
 )
 
 // Finding is a signature that fired, with the evidence that made it fire.

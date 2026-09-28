@@ -3,7 +3,7 @@ package analyze
 import (
 	"sort"
 
-	"github.com/shutdowncheck/shutdowncheck/pkg/schema"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/pkg/schema"
 )
 
 // Deduction is one subtraction from a perfect score, kept alongside its reason

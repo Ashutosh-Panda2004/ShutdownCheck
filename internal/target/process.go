@@ -9,9 +9,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/shutdowncheck/shutdowncheck/internal/analyze"
-	"github.com/shutdowncheck/shutdowncheck/internal/clock"
-	"github.com/shutdowncheck/shutdowncheck/internal/redact"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/analyze"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/clock"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/redact"
 )
 
 // processControl is the whole platform-specific surface of this package.

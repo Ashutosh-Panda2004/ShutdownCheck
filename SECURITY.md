@@ -4,7 +4,7 @@
 
 **Please do not open a public issue for a security problem.**
 
-Report privately via GitHub's [private vulnerability reporting](https://github.com/shutdowncheck/shutdowncheck/security/advisories/new) on this repository.
+Report privately via GitHub's [private vulnerability reporting](https://github.com/Ashutosh-Panda2004/ShutdownCheck/security/advisories/new) on this repository.
 
 Please include: what the issue is, how to reproduce it, the version affected, and what an attacker could achieve. We will acknowledge the report, keep you updated while we investigate, and credit you in the advisory unless you would rather we did not.
 

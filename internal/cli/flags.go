@@ -6,8 +6,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/shutdowncheck/shutdowncheck/internal/probe"
-	"github.com/shutdowncheck/shutdowncheck/internal/redact"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/probe"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/redact"
 )
 
 // repeatedString collects a flag given more than once.

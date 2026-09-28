@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shutdowncheck/shutdowncheck/internal/analyze"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/analyze"
 )
 
 // dockerTarget is driven through a fake daemon so that every path above the CLI

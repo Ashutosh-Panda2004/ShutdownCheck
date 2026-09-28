@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/shutdowncheck/shutdowncheck/internal/analyze"
-	"github.com/shutdowncheck/shutdowncheck/pkg/schema"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/analyze"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/pkg/schema"
 )
 
 // This file holds the contract every language implementation is held to. It
@@ -51,8 +51,15 @@ var scenarios = []scenario{
 		mustFire: []analyze.SignatureID{analyze.SC006, analyze.SC007},
 	},
 	{
-		// The same evidence, judged where closing immediately is the requirement.
+		// The same evidence, judged where closing immediately is the
+		// requirement. Under strict there is no load balancer to race, so an
+		// instant close is correct and the only defect left is the missing
+		// readiness flip (a warning). This is the profile-relative verdict the
+		// spec's profile table and TestProfileChangesTheVerdictForTheSameEvidence
+		// both require: the "broken modes never pass" guard below does not apply
+		// to a mode whose defect only exists under other profiles.
 		mode: "instant-close", profile: "strict", grace: "4s",
+		verdict:     schema.VerdictPass,
 		mustNotFire: []analyze.SignatureID{analyze.SC006},
 	},
 	{
@@ -86,10 +93,12 @@ var scenarios = []scenario{
 	},
 	{
 		mode: "readiness-flap", profile: "kubernetes", grace: "6s", accept: "1s",
+		verdict:  schema.VerdictPass,
 		mustFire: []analyze.SignatureID{analyze.SC016},
 	},
 	{
 		mode: "nonzero-exit", profile: "standalone", grace: "4s",
+		verdict:  schema.VerdictPass,
 		mustFire: []analyze.SignatureID{analyze.SC013},
 	},
 	{

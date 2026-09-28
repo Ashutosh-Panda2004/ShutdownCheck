@@ -1,4 +1,4 @@
-module github.com/shutdowncheck/shutdowncheck
+module github.com/Ashutosh-Panda2004/ShutdownCheck
 
 go 1.24
 

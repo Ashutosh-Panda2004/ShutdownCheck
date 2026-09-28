@@ -8,10 +8,10 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/shutdowncheck/shutdowncheck/internal/analyze"
-	"github.com/shutdowncheck/shutdowncheck/internal/redact"
-	"github.com/shutdowncheck/shutdowncheck/internal/timeline"
-	"github.com/shutdowncheck/shutdowncheck/pkg/schema"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/analyze"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/redact"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/timeline"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/pkg/schema"
 )
 
 // Format names the output rendering.
@@ -24,11 +24,12 @@ const (
 	FormatJUnit    Format = "junit"
 	FormatMarkdown Format = "markdown"
 	FormatNDJSON   Format = "ndjson"
+	FormatHTML     Format = "html"
 )
 
 // Formats lists every supported format, for validation and help text.
 func Formats() []Format {
-	return []Format{FormatHuman, FormatJSON, FormatJUnit, FormatMarkdown, FormatNDJSON}
+	return []Format{FormatHuman, FormatJSON, FormatJUnit, FormatMarkdown, FormatNDJSON, FormatHTML}
 }
 
 // Valid reports whether f is a known format.

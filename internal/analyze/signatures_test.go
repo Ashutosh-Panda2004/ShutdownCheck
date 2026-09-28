@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shutdowncheck/shutdowncheck/internal/timeline"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/timeline"
 )
 
 // fixture builds synthetic timelines.
@@ -198,6 +198,13 @@ var signatureCases = map[SignatureID]signatureCase{
 	SC004: {
 		positive: func() *fixture {
 			f := healthyRun()
+			// The reset destroyed a connection carrying pre-signal work.
+			f.connOpen(4900*time.Millisecond, 2)
+			f.add(timeline.RequestAt(timeline.RequestEvent{
+				Method: "GET", URL: "http://x/",
+				Sent: 4900 * time.Millisecond, Done: 6 * time.Second,
+				Outcome: timeline.OutcomeReset, ConnID: 2,
+			}))
 			return f.connClose(6*time.Second, 2, timeline.TermRST, false)
 		},
 		negative: healthyRun,
@@ -410,4 +417,25 @@ func summaries(findings []Finding) []string {
 		out = append(out, string(f.ID)+": "+f.Summary)
 	}
 	return out
+}
+
+// A refused dial that completes after the process exited is not abandoned
+// work: the server never accepted it. SC011 must stay quiet for refused
+// outcomes while still firing for connections that died mid-request.
+func TestEarlyExitIgnoresRefusedRequests(t *testing.T) {
+	f := newFixture()
+	f.requests(10, 4900*time.Millisecond, 5100*time.Millisecond, timeline.OutcomeOK)
+	// Refused after the process walked out: never accepted, not abandoned.
+	f.requests(2, 6*time.Second, 9*time.Second, timeline.OutcomeRefused)
+	f.signal(fxSignal).exit(8*time.Second, 0)
+
+	policy := lameDuckPolicy(t)
+	facts := BuildFacts(f.build(), policy)
+	sig, ok := SignatureByID(SC011)
+	if !ok {
+		t.Fatal("no such signature: SC011")
+	}
+	if finding, fired := sig.Evaluate(facts, policy); fired {
+		t.Fatalf("SC011 fired on refused requests: %s", finding.Summary)
+	}
 }

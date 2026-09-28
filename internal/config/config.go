@@ -6,7 +6,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/shutdowncheck/shutdowncheck/internal/analyze"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/analyze"
 )
 
 // Built-in defaults, per spec section 11. They are deliberately chosen so that

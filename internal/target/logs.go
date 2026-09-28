@@ -5,7 +5,7 @@ import (
 	"io"
 	"sync"
 
-	"github.com/shutdowncheck/shutdowncheck/internal/redact"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/redact"
 )
 
 // Log capture limits. The tool has no control over what a service prints, so

@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shutdowncheck/shutdowncheck/internal/config"
+	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/config"
 )
 
 func TestRunCeilingIncludesConfiguredReadinessTimeout(t *testing.T) {
