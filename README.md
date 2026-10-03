@@ -83,6 +83,21 @@ $ shutdowncheck run --docker my-api --url /api/orders --readiness-url /readyz
 
 Full sample output is in [spec section 3.3](shutdowncheck-spec.md).
 
+## Screenshots
+
+Both are real captures from running the check against the tool's own
+deliberately broken demo service — the same target `shutdowncheck demo` uses.
+Nothing is mocked up; the two runs score identically, and the request counts
+differ slightly because the load is calibrated fresh each time.
+
+![Terminal report of a failed check: timeline, request counts, and the SC003, SC006 and SC007 findings](docs/screenshots/verdict.png)
+
+*The terminal report: what was in flight when the signal landed, what happened to it, and which stages broke.*
+
+![HTML report of the same check: FAIL banner, score 19/100, run timeline, request scatter and finding cards](docs/screenshots/report.png)
+
+*The same check as a shareable HTML report (`--format html`): score, run timeline, every request plotted, and a card per finding.*
+
 ## Install
 
 | Method | Command |
