@@ -346,6 +346,17 @@ func (f *runFlags) validateResolved(r *config.Resolved) error {
 			return usagef("%w", err)
 		}
 	}
+	// A profile's default accept window must not collide with a grace period
+	// the operator did choose: --profile kubernetes --grace-period 5s would
+	// otherwise be a usage error (the untouched default window is also 5s)
+	// even though the operator never set a window. Shrink the default to
+	// half the grace period. An explicitly configured window, from a flag or
+	// a file, is never rewritten; the Validate below still rejects one that
+	// does not fit.
+	if !f.set["accept-window"] && !r.PolicyOverrides.AcceptWindow &&
+		r.Policy.GracePeriod > 0 && r.Policy.AcceptWindow >= r.Policy.GracePeriod {
+		r.Policy.AcceptWindow = r.Policy.GracePeriod / 2
+	}
 	if err := r.Policy.Validate(); err != nil {
 		return usagef("%w", err)
 	}

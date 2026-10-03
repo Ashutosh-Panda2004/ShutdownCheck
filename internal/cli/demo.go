@@ -67,8 +67,10 @@ func demoCommand(args []string, stdout, stderr io.Writer) int {
 
 	writeBestEffort(stderr, demoPreamble)
 
+	// runCommand takes the arguments after the subcommand name, like the
+	// dispatcher hands it; a leading "run" would stop flag parsing and the
+	// demo would die with "--url is required".
 	runArgs := []string{
-		"run",
 		"--url", "http://" + addr + "/work",
 		"--readiness-url", "http://" + addr + "/readyz",
 		"--profile", *profile,

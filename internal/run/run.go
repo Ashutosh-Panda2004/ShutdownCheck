@@ -322,6 +322,13 @@ func (r *Runner) terminate(ctx context.Context, rate float64) (Result, error) {
 	}
 
 	r.stage(timeline.StageSignal)
+	// The signal's place on the timeline is the moment delivery begins, not
+	// the moment the control path returns. Signalling a container goes
+	// through the daemon and can take tens of milliseconds; stamping the
+	// later time would read "the state at the signal" after a fast target
+	// had already reacted to it (readiness flipped, listener closed) and
+	// the run would be judged inconclusive for the tool's own latency.
+	dispatched := r.now()
 	signalErr := r.opts.Target.Signal(r.opts.Signal)
 	delivered := r.now()
 
@@ -329,7 +336,7 @@ func (r *Runner) terminate(ctx context.Context, rate float64) (Result, error) {
 	if skew < 0 {
 		skew = 0
 	}
-	r.record(timeline.SignalAt(delivered, timeline.SignalEvent{
+	r.record(timeline.SignalAt(dispatched, timeline.SignalEvent{
 		Signal: string(r.opts.Signal),
 		Skew:   skew,
 		Error:  errText(signalErr),
