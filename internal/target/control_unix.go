@@ -69,7 +69,9 @@ type commandControl struct {
 }
 
 func newCommandControl(opts CommandOptions, stdout, stderr io.Writer) (processControl, error) {
-	// Executed directly from an argv slice; no shell, no interpolation.
+	// Executed directly from an argv slice; no shell, no interpolation, and no
+	// context: the target's lifecycle is managed explicitly through SignalPID
+	// and Kill, so a caller's context ending must not kill it early.
 	cmd := exec.Command(opts.Argv[0], opts.Argv[1:]...) // #nosec G204 -- argv comes from the operator's own config
 	cmd.Dir = opts.Dir
 	cmd.Env = opts.Env

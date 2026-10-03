@@ -409,9 +409,9 @@ func stageName(s string) string {
 func explainHTML(id analyze.SignatureID) template.HTML {
 	md, err := remediate.Explain(id)
 	if err != nil {
-		return template.HTML("<p>" + html.EscapeString(err.Error()) + "</p>")
+		return template.HTML("<p>" + html.EscapeString(err.Error()) + "</p>") // #nosec G203 -- the error text is escaped before it is wrapped
 	}
-	return template.HTML(markdownToHTML(md))
+	return template.HTML(markdownToHTML(md)) // #nosec G203 -- markdownToHTML escapes every text and code span it emits, and md is the tool's own embedded remediation page
 }
 
 func markdownToHTML(md string) string {

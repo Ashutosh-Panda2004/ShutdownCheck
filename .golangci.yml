@@ -38,6 +38,13 @@ linters:
         text: SA4023
         linters:
           - staticcheck
+      # The spawned target's lifecycle is managed explicitly through
+      # SignalPID and Kill; binding it to a caller's context would kill the
+      # target when an unrelated operation's context ends.
+      - path: internal/target/control_unix\.go
+        text: "exec\\.Command must not be called"
+        linters:
+          - noctx
       # Test code may ignore errors and use weaker primitives.
       - path: _test\.go
         linters:
