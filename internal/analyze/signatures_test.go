@@ -198,14 +198,19 @@ var signatureCases = map[SignatureID]signatureCase{
 	SC004: {
 		positive: func() *fixture {
 			f := healthyRun()
-			// The reset destroyed a connection carrying pre-signal work.
-			f.connOpen(4900*time.Millisecond, 2)
-			f.add(timeline.RequestAt(timeline.RequestEvent{
-				Method: "GET", URL: "http://x/",
-				Sent: 4900 * time.Millisecond, Done: 6 * time.Second,
-				Outcome: timeline.OutcomeReset, ConnID: 2,
-			}))
-			return f.connClose(6*time.Second, 2, timeline.TermRST, false)
+			// Six connections destroyed by RST: one past the teardown
+			// allowance, so this is a server killing sockets, not the
+			// handful of resets an exiting process cannot avoid.
+			for id := uint64(2); id <= 7; id++ {
+				f.connOpen(4900*time.Millisecond, id)
+				f.add(timeline.RequestAt(timeline.RequestEvent{
+					Method: "GET", URL: "http://x/",
+					Sent: 4900 * time.Millisecond, Done: 6 * time.Second,
+					Outcome: timeline.OutcomeReset, ConnID: id,
+				}))
+				f.connClose(6*time.Second, id, timeline.TermRST, false)
+			}
+			return f
 		},
 		negative: healthyRun,
 	},
@@ -392,6 +397,42 @@ func TestSignatureFixtures(t *testing.T) {
 				t.Fatalf("%s fired on a correct shutdown: %s", id, finding.Summary)
 			}
 		})
+	}
+}
+
+// SC004 tolerates a small number of post-signal resets: when a process
+// exits, requests already buffered in kernel sockets are answered with RST
+// by the kernel, which no server can prevent. At the allowance the rule
+// stays quiet; one past it, the resets are systematic and the rule fires.
+func TestSC004TeardownAllowance(t *testing.T) {
+	signature, ok := SignatureByID(SC004)
+	if !ok {
+		t.Fatal("SC004 is not registered")
+	}
+	policy := lameDuckPolicy(t)
+
+	withResets := func(n int) *fixture {
+		f := healthyRun()
+		for id := uint64(2); id < 2+uint64(n); id++ {
+			f.connOpen(4900*time.Millisecond, id)
+			f.add(timeline.RequestAt(timeline.RequestEvent{
+				Method: "GET", URL: "http://x/",
+				Sent: 4900 * time.Millisecond, Done: 6 * time.Second,
+				Outcome: timeline.OutcomeReset, ConnID: id,
+			}))
+			f.connClose(6*time.Second, id, timeline.TermRST, false)
+		}
+		return f
+	}
+
+	facts := BuildFacts(withResets(resetTeardownAllowance).build(), policy)
+	if _, fired := signature.Evaluate(facts, policy); fired {
+		t.Errorf("SC004 fired at %d resets, the teardown allowance", resetTeardownAllowance)
+	}
+
+	facts = BuildFacts(withResets(resetTeardownAllowance+1).build(), policy)
+	if _, fired := signature.Evaluate(facts, policy); !fired {
+		t.Errorf("SC004 stayed quiet at %d resets, one past the allowance", resetTeardownAllowance+1)
 	}
 }
 

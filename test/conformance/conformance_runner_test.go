@@ -82,7 +82,7 @@ func runScenario(t *testing.T, serverArgv []string, s scenario) {
 		"--readiness-url", "http://" + addr + "/readyz",
 		"--profile", s.profile,
 		"--grace-period", s.grace,
-		"--ensure-in-flight", "6",
+		"--ensure-in-flight", "10",
 		"--warmup", "600ms",
 		"--steady", "700ms",
 		"--request-timeout", "1s",

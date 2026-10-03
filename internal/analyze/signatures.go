@@ -149,11 +149,21 @@ var ruleInFlightDropped = rule{
 	},
 }
 
+// resetTeardownAllowance is the number of post-signal connection resets a
+// run may show before SC004 treats them as a defect. When a process or
+// container exits, requests already sitting in kernel socket buffers are
+// answered with RST by the kernel itself; no server, however correct, can
+// close those connections cleanly, so a handful of resets is what ordinary
+// teardown looks like under load. Resets beyond the allowance mean the
+// server is destroying sockets systematically rather than occasionally
+// losing the race against its own exit.
+const resetTeardownAllowance = 5
+
 // SC004: sockets destroyed rather than closed.
 var ruleAbruptConnectionReset = rule{
 	id: SC004,
 	eval: func(f Facts, _ Policy) (string, map[string]any, bool) {
-		if f.Connections.ResetAfterSignal == 0 {
+		if f.Connections.ResetAfterSignal <= resetTeardownAllowance {
 			return "", nil, false
 		}
 		return fmt.Sprintf("%d connection(s) were reset rather than closed cleanly after the signal.",
@@ -161,6 +171,7 @@ var ruleAbruptConnectionReset = rule{
 			map[string]any{
 				"reset_after_signal": f.Connections.ResetAfterSignal,
 				"closed_by_fin":      f.Connections.ClosedByFIN,
+				"teardown_allowance": resetTeardownAllowance,
 			}, true
 	},
 }
