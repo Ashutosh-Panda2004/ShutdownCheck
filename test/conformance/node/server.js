@@ -30,8 +30,15 @@ const mode = args.mode;
 
 let ready = true;
 let stalling = false;
+let closing = false;
 
 const server = http.createServer((req, res) => {
+  if (closing) {
+    // Draining has begun: this connection must not be reused for another
+    // request, or a busy client keeps it hot and close() never completes.
+    res.shouldKeepAlive = false;
+  }
+
   if (req.url === '/readyz') {
     res.writeHead(ready ? 200 : 503).end();
     return;
@@ -57,8 +64,12 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // drainGracefully is the correct sequence. closeIdleConnections is the part
 // people miss: without it close() waits forever on sockets nobody is using.
+// Marking responses shouldKeepAlive=false once draining starts is the other
+// half: close() leaves busy connections alone, so without it a client under
+// load keeps every connection hot and the drain still never finishes.
 function drainGracefully() {
   return new Promise((resolve) => {
+    closing = true;
     server.close(resolve);
     if (server.closeIdleConnections) {
       server.closeIdleConnections();
@@ -107,7 +118,9 @@ async function onSigterm() {
 
     case 'early-exit':
       ready = false;
-      await sleep(lameDuckMs);
+      // Exit at once, abandoning whatever is in flight: sleeping out the
+      // lame-duck window first would let every in-flight request finish and
+      // there would be no defect left to measure.
       process.exit(0);
       break;
 
@@ -119,6 +132,9 @@ async function onSigterm() {
     case 'slow-readiness':
       await sleep(3000);
       ready = false;
+      // Wait for the readiness probe to observe the flip before shutting
+      // down, so the tool can measure how late the flip was.
+      await sleep(500);
       await drainGracefully();
       break;
 
