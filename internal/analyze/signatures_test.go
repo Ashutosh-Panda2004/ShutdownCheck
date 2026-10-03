@@ -400,6 +400,37 @@ func TestSignatureFixtures(t *testing.T) {
 	}
 }
 
+// For a Docker target, connection teardown and port acceptance are
+// properties of Docker's proxy rather than the service: the proxy holds
+// client connections open while the service drains, resets all of them
+// when the container dies, and keeps the published port accepting until
+// then. SC004 and SC005 therefore stay quiet for Docker targets while
+// firing normally for processes.
+func TestDockerTargetSkipsProxyObservations(t *testing.T) {
+	policy := lameDuckPolicy(t)
+
+	for _, id := range []SignatureID{SC004, SC005} {
+		signature, ok := SignatureByID(id)
+		if !ok {
+			t.Fatalf("%s is not registered", id)
+		}
+		tc := signatureCases[id]
+		if tc.policy != nil {
+			policy = tc.policy(t)
+		}
+
+		facts := BuildFacts(tc.positive().build(), policy)
+		if _, fired := signature.Evaluate(facts, policy); !fired {
+			t.Fatalf("%s did not fire on its positive fixture", id)
+		}
+
+		facts.TargetKind = TargetDocker
+		if _, fired := signature.Evaluate(facts, policy); fired {
+			t.Errorf("%s fired for a Docker target, where the observation belongs to the proxy", id)
+		}
+	}
+}
+
 // SC004 tolerates a small number of post-signal resets: when a process
 // exits, requests already buffered in kernel sockets are answered with RST
 // by the kernel, which no server can prevent. At the allowance the rule

@@ -163,6 +163,16 @@ const resetTeardownAllowance = 5
 var ruleAbruptConnectionReset = rule{
 	id: SC004,
 	eval: func(f Facts, _ Policy) (string, map[string]any, bool) {
+		// For a Docker target the client connections terminate at Docker's
+		// proxy, which holds them open while the service drains and resets
+		// all of them when the container dies, however cleanly the service
+		// itself closed its side. The reset count then measures the proxy,
+		// not the service, so it is reported in the connections section but
+		// never judged. The harm a reset causes is still judged, through the
+		// requests it destroys (SC003).
+		if f.TargetKind == TargetDocker {
+			return "", nil, false
+		}
 		if f.Connections.ResetAfterSignal <= resetTeardownAllowance {
 			return "", nil, false
 		}
@@ -180,6 +190,14 @@ var ruleAbruptConnectionReset = rule{
 var ruleListenerOpenAfterWindow = rule{
 	id: SC005,
 	eval: func(f Facts, p Policy) (string, map[string]any, bool) {
+		// For a Docker target the probed listener is Docker's proxy, which
+		// keeps accepting on the published port until the container is gone;
+		// when the service's own listener closed is not observable through
+		// it. Acceptance is reported in the run's statistics but, as with
+		// SC004, not judged.
+		if f.TargetKind == TargetDocker {
+			return "", nil, false
+		}
 		if !f.HasSignal || !f.AcceptedAfterWindow {
 			return "", nil, false
 		}

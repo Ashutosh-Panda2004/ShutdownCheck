@@ -65,6 +65,13 @@ type Percentiles struct {
 // Deriving it once keeps each rule short and free of scanning logic, and means
 // a signature can be tested by handing it a Facts value directly.
 type Facts struct {
+	// TargetKind is the kind of target the evidence came from, copied in by
+	// Analyze. A few observations are only meaningful for some kinds: for a
+	// Docker target the published port and every client connection belong to
+	// Docker's proxy, not to the service, so connection teardown and port
+	// acceptance say nothing about how the service itself shut down.
+	TargetKind TargetKind
+
 	HasSignal  bool
 	SignalAt   time.Duration
 	SignalSkew time.Duration
