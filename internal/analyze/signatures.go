@@ -2,6 +2,7 @@ package analyze
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/timeline"
 )
@@ -186,19 +187,45 @@ var ruleAbruptConnectionReset = rule{
 	},
 }
 
+// dockerAcceptanceSlack is how long a Docker target's published port may
+// keep accepting past the accept window before SC005 judges it. The port
+// belongs to Docker's proxy, so after the signal the delivery through the
+// daemon, the service's own close, and the proxy noticing the container is
+// gone each take real time a process target does not spend; acceptance
+// ending within the slack is that machinery winding down. Acceptance
+// beyond it means the service was still listening, which the run's own
+// evidence shows directly: requests kept being answered.
+const dockerAcceptanceSlack = 2 * time.Second
+
 // SC005: still pulling in traffic it cannot finish.
 var ruleListenerOpenAfterWindow = rule{
 	id: SC005,
 	eval: func(f Facts, p Policy) (string, map[string]any, bool) {
-		// For a Docker target the probed listener is Docker's proxy, which
-		// keeps accepting on the published port until the container is gone;
-		// when the service's own listener closed is not observable through
-		// it. Acceptance is reported in the run's statistics but, as with
-		// SC004, not judged.
-		if f.TargetKind == TargetDocker {
+		if !f.HasSignal {
 			return "", nil, false
 		}
-		if !f.HasSignal || !f.AcceptedAfterWindow {
+		// For a Docker target the probed listener is the proxy's, and the
+		// probe cannot tell the service's listener from the proxy's while
+		// the container lives. What can be judged is when acceptance
+		// actually ended, so the docker path uses the observed close time
+		// with the slack above instead of the raw probe samples.
+		if f.TargetKind == TargetDocker {
+			if f.ListenerClosedAt != nil &&
+				*f.ListenerClosedAt-f.SignalAt <= p.AcceptWindow+dockerAcceptanceSlack {
+				return "", nil, false
+			}
+			evidence := map[string]any{
+				"accept_window_ms":           p.AcceptWindow.Milliseconds(),
+				"docker_acceptance_slack_ms": dockerAcceptanceSlack.Milliseconds(),
+			}
+			if f.ListenerClosedAt != nil {
+				evidence["closed_after_ms"] = (*f.ListenerClosedAt - f.SignalAt).Milliseconds()
+			}
+			return fmt.Sprintf("The listener was still accepting connections more than %s after the signal.",
+					p.AcceptWindow),
+				evidence, true
+		}
+		if !f.AcceptedAfterWindow {
 			return "", nil, false
 		}
 		return fmt.Sprintf("The listener was still accepting connections more than %s after the signal.",

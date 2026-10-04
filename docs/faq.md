@@ -46,9 +46,9 @@ It's the difference between "it broke" and "here's the exact line to change."
 
 If your framework runs on Linux and handles SIGTERM, yes. Verified with Go (`net/http`), Node.js, and Python. The seven stages are framework-agnostic — they're about the contract between your app and the orchestrator, not about specific APIs.
 
-## Why don't SC004 and SC005 fire for Docker targets?
+## Why are SC004 and SC005 judged differently for Docker targets?
 
-Because for a container, those two observations belong to Docker's proxy rather than your service. Client connections terminate at the proxy: it holds them open while your service drains, then resets all of them when the container dies — however cleanly your service closed its own side. The published port likewise keeps accepting until the container is gone. Both counts are still shown in the report's connection and request statistics; they just aren't judged. What a reset destroys is judged as usual, through the in-flight requests it kills (SC003).
+Because for a container, the client connections and the published port belong to Docker's proxy rather than your service. The proxy holds connections open while your service drains, then resets all of them when the container dies — however cleanly your service closed its own side — so SC004 (abrupt resets) is not judged for Docker targets; the counts still appear in the report's statistics, and what a reset destroys is judged as usual through the in-flight requests it kills (SC003). SC005 (listener still accepting) is judged, but against when the published port actually stopped accepting, with a two-second allowance for signal delivery through the daemon and the proxy winding down; a port still accepting well past its window plus that allowance is a service that never closed, and the run's answered requests show it.
 
 ## Is this production-ready?
 

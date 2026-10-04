@@ -400,34 +400,57 @@ func TestSignatureFixtures(t *testing.T) {
 	}
 }
 
-// For a Docker target, connection teardown and port acceptance are
-// properties of Docker's proxy rather than the service: the proxy holds
-// client connections open while the service drains, resets all of them
-// when the container dies, and keeps the published port accepting until
-// then. SC004 and SC005 therefore stay quiet for Docker targets while
-// firing normally for processes.
-func TestDockerTargetSkipsProxyObservations(t *testing.T) {
+// For a Docker target, connection teardown belongs to Docker's proxy
+// rather than the service: the proxy holds client connections open while
+// the service drains and resets all of them when the container dies.
+// SC004 therefore stays quiet for Docker targets while firing normally
+// for processes.
+func TestDockerTargetSkipsProxyResets(t *testing.T) {
+	signature, ok := SignatureByID(SC004)
+	if !ok {
+		t.Fatal("SC004 is not registered")
+	}
 	policy := lameDuckPolicy(t)
 
-	for _, id := range []SignatureID{SC004, SC005} {
-		signature, ok := SignatureByID(id)
-		if !ok {
-			t.Fatalf("%s is not registered", id)
-		}
-		tc := signatureCases[id]
-		if tc.policy != nil {
-			policy = tc.policy(t)
-		}
+	facts := BuildFacts(signatureCases[SC004].positive().build(), policy)
+	if _, fired := signature.Evaluate(facts, policy); !fired {
+		t.Fatal("SC004 did not fire on its positive fixture")
+	}
 
-		facts := BuildFacts(tc.positive().build(), policy)
-		if _, fired := signature.Evaluate(facts, policy); !fired {
-			t.Fatalf("%s did not fire on its positive fixture", id)
-		}
+	facts.TargetKind = TargetDocker
+	if _, fired := signature.Evaluate(facts, policy); fired {
+		t.Error("SC004 fired for a Docker target, where the observation belongs to the proxy")
+	}
+}
 
+// SC005 for a Docker target judges when acceptance actually ended rather
+// than the raw probe samples, which only observe the proxy: a published
+// port that stops accepting within the accept window plus the docker
+// slack is the delivery and proxy machinery winding down, while one that
+// is still accepting well past it is a service that never closed.
+func TestSC005DockerAcceptanceSlack(t *testing.T) {
+	signature, ok := SignatureByID(SC005)
+	if !ok {
+		t.Fatal("SC005 is not registered")
+	}
+	policy := lameDuckPolicy(t)
+	policy.AcceptWindow = 800 * time.Millisecond
+
+	run := func(closeAt time.Duration) Facts {
+		f := newFixture()
+		f.listener(time.Second, true)
+		f.signal(fxSignal)
+		f.listener(closeAt, false)
+		facts := BuildFacts(f.build(), policy)
 		facts.TargetKind = TargetDocker
-		if _, fired := signature.Evaluate(facts, policy); fired {
-			t.Errorf("%s fired for a Docker target, where the observation belongs to the proxy", id)
-		}
+		return facts
+	}
+
+	if _, fired := signature.Evaluate(run(fxSignal+300*time.Millisecond), policy); fired {
+		t.Error("SC005 fired for a Docker target whose port stopped accepting within the slack")
+	}
+	if _, fired := signature.Evaluate(run(fxSignal+4*time.Second), policy); !fired {
+		t.Error("SC005 stayed quiet for a Docker target still accepting seconds past its window")
 	}
 }
 
