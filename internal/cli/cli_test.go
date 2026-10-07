@@ -184,11 +184,11 @@ func TestRunRejectsConflictingTargets(t *testing.T) {
 }
 
 func TestRunRejectsUnknownFormat(t *testing.T) {
-	code, _, stderr := execute(t, "run", "--url", "http://localhost:8080/", "--pid", "4242", "--format", "html")
+	code, _, stderr := execute(t, "run", "--url", "http://localhost:8080/", "--pid", "4242", "--format", "yaml")
 	if code != schema.ExitUsage {
 		t.Fatalf("exit = %d, want %d", code, schema.ExitUsage)
 	}
-	if !strings.Contains(stderr, "html") {
+	if !strings.Contains(stderr, "yaml") {
 		t.Errorf("stderr should name the bad format, got %q", stderr)
 	}
 }
@@ -367,7 +367,7 @@ func TestAnalyzeRejectsBadInput(t *testing.T) {
 	cases := map[string][]string{
 		"no file":      {"analyze"},
 		"missing file": {"analyze", filepath.Join(t.TempDir(), "absent.ndjson")},
-		"bad format":   {"analyze", instantCloseNDJSON(t), "--format", "html"},
+		"bad format":   {"analyze", instantCloseNDJSON(t), "--format", "yaml"},
 		"bad profile":  {"analyze", instantCloseNDJSON(t), "--profile", "nonsense"},
 	}
 

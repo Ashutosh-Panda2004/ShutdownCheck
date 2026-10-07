@@ -2,6 +2,7 @@ package analyze
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/Ashutosh-Panda2004/ShutdownCheck/internal/timeline"
 )
@@ -149,11 +150,31 @@ var ruleInFlightDropped = rule{
 	},
 }
 
+// resetTeardownAllowance is the number of post-signal connection resets a
+// run may show before SC004 treats them as a defect. When a process or
+// container exits, requests already sitting in kernel socket buffers are
+// answered with RST by the kernel itself; no server, however correct, can
+// close those connections cleanly, so a handful of resets is what ordinary
+// teardown looks like under load. Resets beyond the allowance mean the
+// server is destroying sockets systematically rather than occasionally
+// losing the race against its own exit.
+const resetTeardownAllowance = 5
+
 // SC004: sockets destroyed rather than closed.
 var ruleAbruptConnectionReset = rule{
 	id: SC004,
 	eval: func(f Facts, _ Policy) (string, map[string]any, bool) {
-		if f.Connections.ResetAfterSignal == 0 {
+		// For a Docker target the client connections terminate at Docker's
+		// proxy, which holds them open while the service drains and resets
+		// all of them when the container dies, however cleanly the service
+		// itself closed its side. The reset count then measures the proxy,
+		// not the service, so it is reported in the connections section but
+		// never judged. The harm a reset causes is still judged, through the
+		// requests it destroys (SC003).
+		if f.TargetKind == TargetDocker {
+			return "", nil, false
+		}
+		if f.Connections.ResetAfterSignal <= resetTeardownAllowance {
 			return "", nil, false
 		}
 		return fmt.Sprintf("%d connection(s) were reset rather than closed cleanly after the signal.",
@@ -161,15 +182,50 @@ var ruleAbruptConnectionReset = rule{
 			map[string]any{
 				"reset_after_signal": f.Connections.ResetAfterSignal,
 				"closed_by_fin":      f.Connections.ClosedByFIN,
+				"teardown_allowance": resetTeardownAllowance,
 			}, true
 	},
 }
+
+// dockerAcceptanceSlack is how long a Docker target's published port may
+// keep accepting past the accept window before SC005 judges it. The port
+// belongs to Docker's proxy, so after the signal the delivery through the
+// daemon, the service's own close, and the proxy noticing the container is
+// gone each take real time a process target does not spend; acceptance
+// ending within the slack is that machinery winding down. Acceptance
+// beyond it means the service was still listening, which the run's own
+// evidence shows directly: requests kept being answered.
+const dockerAcceptanceSlack = 2 * time.Second
 
 // SC005: still pulling in traffic it cannot finish.
 var ruleListenerOpenAfterWindow = rule{
 	id: SC005,
 	eval: func(f Facts, p Policy) (string, map[string]any, bool) {
-		if !f.HasSignal || !f.AcceptedAfterWindow {
+		if !f.HasSignal {
+			return "", nil, false
+		}
+		// For a Docker target the probed listener is the proxy's, and the
+		// probe cannot tell the service's listener from the proxy's while
+		// the container lives. What can be judged is when acceptance
+		// actually ended, so the docker path uses the observed close time
+		// with the slack above instead of the raw probe samples.
+		if f.TargetKind == TargetDocker {
+			if f.ListenerClosedAt != nil &&
+				*f.ListenerClosedAt-f.SignalAt <= p.AcceptWindow+dockerAcceptanceSlack {
+				return "", nil, false
+			}
+			evidence := map[string]any{
+				"accept_window_ms":           p.AcceptWindow.Milliseconds(),
+				"docker_acceptance_slack_ms": dockerAcceptanceSlack.Milliseconds(),
+			}
+			if f.ListenerClosedAt != nil {
+				evidence["closed_after_ms"] = (*f.ListenerClosedAt - f.SignalAt).Milliseconds()
+			}
+			return fmt.Sprintf("The listener was still accepting connections more than %s after the signal.",
+					p.AcceptWindow),
+				evidence, true
+		}
+		if !f.AcceptedAfterWindow {
 			return "", nil, false
 		}
 		return fmt.Sprintf("The listener was still accepting connections more than %s after the signal.",

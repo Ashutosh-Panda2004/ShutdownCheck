@@ -63,6 +63,7 @@ type Result struct {
 // recorded run be re-judged offline under a different profile.
 func Analyze(in Input) Result {
 	facts := BuildFacts(in.Timeline, in.Policy)
+	facts.TargetKind = in.Target.Kind
 
 	var findings []Finding
 	unachievable := in.Load.GoalEvaluated && !in.Load.Achievable

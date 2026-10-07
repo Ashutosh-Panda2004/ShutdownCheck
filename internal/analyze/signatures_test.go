@@ -198,14 +198,19 @@ var signatureCases = map[SignatureID]signatureCase{
 	SC004: {
 		positive: func() *fixture {
 			f := healthyRun()
-			// The reset destroyed a connection carrying pre-signal work.
-			f.connOpen(4900*time.Millisecond, 2)
-			f.add(timeline.RequestAt(timeline.RequestEvent{
-				Method: "GET", URL: "http://x/",
-				Sent: 4900 * time.Millisecond, Done: 6 * time.Second,
-				Outcome: timeline.OutcomeReset, ConnID: 2,
-			}))
-			return f.connClose(6*time.Second, 2, timeline.TermRST, false)
+			// Six connections destroyed by RST: one past the teardown
+			// allowance, so this is a server killing sockets, not the
+			// handful of resets an exiting process cannot avoid.
+			for id := uint64(2); id <= 7; id++ {
+				f.connOpen(4900*time.Millisecond, id)
+				f.add(timeline.RequestAt(timeline.RequestEvent{
+					Method: "GET", URL: "http://x/",
+					Sent: 4900 * time.Millisecond, Done: 6 * time.Second,
+					Outcome: timeline.OutcomeReset, ConnID: id,
+				}))
+				f.connClose(6*time.Second, id, timeline.TermRST, false)
+			}
+			return f
 		},
 		negative: healthyRun,
 	},
@@ -392,6 +397,96 @@ func TestSignatureFixtures(t *testing.T) {
 				t.Fatalf("%s fired on a correct shutdown: %s", id, finding.Summary)
 			}
 		})
+	}
+}
+
+// For a Docker target, connection teardown belongs to Docker's proxy
+// rather than the service: the proxy holds client connections open while
+// the service drains and resets all of them when the container dies.
+// SC004 therefore stays quiet for Docker targets while firing normally
+// for processes.
+func TestDockerTargetSkipsProxyResets(t *testing.T) {
+	signature, ok := SignatureByID(SC004)
+	if !ok {
+		t.Fatal("SC004 is not registered")
+	}
+	policy := lameDuckPolicy(t)
+
+	facts := BuildFacts(signatureCases[SC004].positive().build(), policy)
+	if _, fired := signature.Evaluate(facts, policy); !fired {
+		t.Fatal("SC004 did not fire on its positive fixture")
+	}
+
+	facts.TargetKind = TargetDocker
+	if _, fired := signature.Evaluate(facts, policy); fired {
+		t.Error("SC004 fired for a Docker target, where the observation belongs to the proxy")
+	}
+}
+
+// SC005 for a Docker target judges when acceptance actually ended rather
+// than the raw probe samples, which only observe the proxy: a published
+// port that stops accepting within the accept window plus the docker
+// slack is the delivery and proxy machinery winding down, while one that
+// is still accepting well past it is a service that never closed.
+func TestSC005DockerAcceptanceSlack(t *testing.T) {
+	signature, ok := SignatureByID(SC005)
+	if !ok {
+		t.Fatal("SC005 is not registered")
+	}
+	policy := lameDuckPolicy(t)
+	policy.AcceptWindow = 800 * time.Millisecond
+
+	run := func(closeAt time.Duration) Facts {
+		f := newFixture()
+		f.listener(time.Second, true)
+		f.signal(fxSignal)
+		f.listener(closeAt, false)
+		facts := BuildFacts(f.build(), policy)
+		facts.TargetKind = TargetDocker
+		return facts
+	}
+
+	if _, fired := signature.Evaluate(run(fxSignal+300*time.Millisecond), policy); fired {
+		t.Error("SC005 fired for a Docker target whose port stopped accepting within the slack")
+	}
+	if _, fired := signature.Evaluate(run(fxSignal+4*time.Second), policy); !fired {
+		t.Error("SC005 stayed quiet for a Docker target still accepting seconds past its window")
+	}
+}
+
+// SC004 tolerates a small number of post-signal resets: when a process
+// exits, requests already buffered in kernel sockets are answered with RST
+// by the kernel, which no server can prevent. At the allowance the rule
+// stays quiet; one past it, the resets are systematic and the rule fires.
+func TestSC004TeardownAllowance(t *testing.T) {
+	signature, ok := SignatureByID(SC004)
+	if !ok {
+		t.Fatal("SC004 is not registered")
+	}
+	policy := lameDuckPolicy(t)
+
+	withResets := func(n int) *fixture {
+		f := healthyRun()
+		for id := uint64(2); id < 2+uint64(n); id++ {
+			f.connOpen(4900*time.Millisecond, id)
+			f.add(timeline.RequestAt(timeline.RequestEvent{
+				Method: "GET", URL: "http://x/",
+				Sent: 4900 * time.Millisecond, Done: 6 * time.Second,
+				Outcome: timeline.OutcomeReset, ConnID: id,
+			}))
+			f.connClose(6*time.Second, id, timeline.TermRST, false)
+		}
+		return f
+	}
+
+	facts := BuildFacts(withResets(resetTeardownAllowance).build(), policy)
+	if _, fired := signature.Evaluate(facts, policy); fired {
+		t.Errorf("SC004 fired at %d resets, the teardown allowance", resetTeardownAllowance)
+	}
+
+	facts = BuildFacts(withResets(resetTeardownAllowance+1).build(), policy)
+	if _, fired := signature.Evaluate(facts, policy); !fired {
+		t.Errorf("SC004 stayed quiet at %d resets, one past the allowance", resetTeardownAllowance+1)
 	}
 }
 

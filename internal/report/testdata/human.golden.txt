@@ -21,15 +21,12 @@ CONNECTIONS
   closed with Connection: close                  0   clients were never told to close
   terminated by RST rather than FIN              1   abrupt
 
-VERDICT: FAIL      score 36/100 (F)
+VERDICT: FAIL      score 46/100 (F)
   gate max_inflight_drop_pct: 27.27 exceeds the limit of 0
 
   x SC003   IN_FLIGHT_DROPPED
       6 of 22 in-flight request(s) were destroyed during shutdown.
       In-progress user requests fail on every deploy.
-  x SC004   ABRUPT_CONNECTION_RESET
-      1 connection(s) were reset rather than closed cleanly after the signal.
-      Clients see ECONNRESET, which breaks retries for non-idempotent requests.
   x SC006   NO_DEREGISTRATION_WINDOW
       The listener closed 10ms after the signal, before de-registration could propagate.
       502s at the ingress on every deploy, because routing updates land afterwards.

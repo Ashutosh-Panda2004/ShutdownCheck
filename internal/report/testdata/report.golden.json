@@ -3,7 +3,7 @@
   "tool_version": "1.0.0",
   "verdict": "fail",
   "score": {
-    "value": 36,
+    "value": 46,
     "grade": "F",
     "weights_version": "1.0"
   },
@@ -122,20 +122,6 @@
       "impact": "In-progress user requests fail on every deploy.",
       "remediation_id": "SC003",
       "docs_url": "https://shutdowncheck.dev/signatures/SC003"
-    },
-    {
-      "id": "SC004",
-      "name": "ABRUPT_CONNECTION_RESET",
-      "stage": "S5",
-      "severity": "error",
-      "summary": "1 connection(s) were reset rather than closed cleanly after the signal.",
-      "evidence": {
-        "closed_by_fin": 0,
-        "reset_after_signal": 1
-      },
-      "impact": "Clients see ECONNRESET, which breaks retries for non-idempotent requests.",
-      "remediation_id": "SC004",
-      "docs_url": "https://shutdowncheck.dev/signatures/SC004"
     },
     {
       "id": "SC006",

@@ -275,7 +275,10 @@ jobs:
 
       - name: Confirm the built binary reports its version
         run: |
-          binary=$(find dist -type f -name shutdowncheck -perm -u+x | head -n 1)
+          # Only the build for this runner's own platform can execute here;
+          # picking the first executable in dist order used to select the
+          # darwin (or arm64) binary and die with an exec format error.
+          binary=$(find dist -type f -path "*$(go env GOOS)_$(go env GOARCH)*" -name shutdowncheck | head -n 1)
           if [ -z "$binary" ]; then
             echo "no linux binary was produced"
             exit 1
