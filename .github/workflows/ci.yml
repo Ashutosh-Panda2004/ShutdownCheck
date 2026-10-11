@@ -185,7 +185,7 @@ jobs:
         with:
           # govulncheck v1.7.0 requires Go 1.25 or newer. Keep this exact so
           # GOTOOLCHAIN=local remains reproducible while test jobs cover 1.24.
-          go-version: '1.26.8'
+          go-version: '1.26.9'
 
       - name: Install govulncheck
         run: go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
@@ -234,7 +234,7 @@ jobs:
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           # gosec v2.29.0 requires Go 1.25 or newer.
-          go-version: '1.26.8'
+          go-version: '1.26.9'
 
       - name: Install gosec
         run: go install github.com/securego/gosec/v2/cmd/gosec@v2.29.0
@@ -257,7 +257,7 @@ jobs:
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           # Match the compiler used by the publishing workflow exactly.
-          go-version: '1.26.8'
+          go-version: '1.26.9'
 
       - name: Validate .goreleaser.yaml
         uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6
