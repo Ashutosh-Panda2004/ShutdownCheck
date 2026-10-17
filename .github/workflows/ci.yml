@@ -260,13 +260,13 @@ jobs:
           go-version: '1.26.9'
 
       - name: Validate .goreleaser.yaml
-        uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6
+        uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
         with:
           version: v2.17.0
           args: check
 
       - name: Snapshot build for every target platform
-        uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6
+        uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
         with:
           version: v2.17.0
           # Docker images and signing need a registry and an OIDC token, so the
